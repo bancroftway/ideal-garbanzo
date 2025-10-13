@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="MyApp.AppHost/MyApp.AppHost.csproj" Id="fe55f4bc-8c7b-442c-b720-d319e838c9d3" />
+  <Project Path="MyApp.ServiceDefaults/MyApp.ServiceDefaults.csproj" />
+  <Project Path="MyApp\MyApp.csproj" />
+</Solution>
