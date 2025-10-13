@@ -1,7 +1,7 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-var username = builder.AddParameter("username", secret: true);
-var password = builder.AddParameter("password", secret: true);
+var username = builder.AddParameter("username", secret: false, defaultValue: "guest");
+var password = builder.AddParameter("password", secret: false, defaultValue: "password1234!!");
 
 var postgres = builder.AddPostgres("postgres").WithPgAdmin()
     .WithDataVolume("dbserver-volume", isReadOnly: false)
@@ -14,7 +14,7 @@ var rabbitmq = builder.AddRabbitMQ("messaging", username, password)
     .WithManagementPlugin()
     .WithLifetime(ContainerLifetime.Persistent);
 
-var docling = builder.AddContainer("docling", "quay.io/docling-project/docling-serve-cu124:latest")
+var docling = builder.AddContainer("docling", "quay.io/docling-project/docling-serve-cpu:latest")
     .WithArgs("sh", "-c", "docling-tools models download --output-dir /opt/app-root/src/.cache/docling/models --all && exec docling-serve run")
     .WithEnvironment("DOCLING_SERVE_ENABLE_UI", "true")
     .WithEnvironment("UVICORN_WORKERS", "1")

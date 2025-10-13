@@ -1,0 +1,99 @@
+{
+  "name": "MyApp .NET Aspire",
+  "image": "mcr.microsoft.com/dotnet/nightly/sdk:10.0",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "version": "latest"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csharp",
+        "ms-dotnettools.csdevkit",
+        "ms-dotnettools.vscode-dotnet-runtime",
+        "ms-azuretools.vscode-docker",
+        "GitHub.copilot",
+        "GitHub.copilot-chat"
+      ],
+      "settings": {
+        "dotnet.defaultSolution": "src/MyApp.slnx"
+      }
+    }
+  },
+
+  "forwardPorts": [
+    15888,
+    18888,
+    5000,
+    5001,
+    5432,
+    5672,
+    15672,
+    6333,
+    6334,
+    8001
+  ],
+
+  "portsAttributes": {
+    "15888": {
+      "label": "Aspire Dashboard (HTTP)",
+      "onAutoForward": "notify"
+    },
+    "18888": {
+      "label": "Aspire Dashboard (HTTPS)",
+      "onAutoForward": "ignore"
+    },
+    "5000": {
+      "label": "MyApp (HTTP)",
+      "onAutoForward": "notify"
+    },
+    "5001": {
+      "label": "MyApp (HTTPS)",
+      "onAutoForward": "ignore"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "ignore"
+    },
+    "5672": {
+      "label": "RabbitMQ",
+      "onAutoForward": "ignore"
+    },
+    "15672": {
+      "label": "RabbitMQ Management",
+      "onAutoForward": "ignore"
+    },
+    "6333": {
+      "label": "Qdrant HTTP",
+      "onAutoForward": "ignore"
+    },
+    "6334": {
+      "label": "Qdrant gRPC",
+      "onAutoForward": "ignore"
+    },
+    "8001": {
+      "label": "Docling API",
+      "onAutoForward": "ignore"
+    }
+  },
+
+  "containerEnv": {
+    "ASPNETCORE_ENVIRONMENT": "Development",
+    "DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER": "true",
+    "ASPIRE_ALLOW_UNSECURED_TRANSPORT": "true"
+  },
+
+  "postCreateCommand": "dotnet tool install -g Aspire.Cli --prerelease && dotnet restore src/MyApp.slnx",
+
+  "remoteUser": "vscode"
+}
