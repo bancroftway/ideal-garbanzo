@@ -1,6 +1,6 @@
 {
   "name": "MyApp .NET Aspire",
-  "image": "mcr.microsoft.com/dotnet/nightly/sdk:10.0",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:dev-10.0-preview-noble",
   
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
