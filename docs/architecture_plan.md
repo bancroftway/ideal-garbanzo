@@ -1,6 +1,6 @@
 # MyApp Architecture Plan
 
-> **Document Version:** 1.1  
+> **Document Version:** 1.2  
 > **Created:** December 15, 2025  
 > **Last Updated:** December 16, 2025  
 > **Status:** Implementation Complete
@@ -86,7 +86,7 @@ This document describes the architecture and implementation plan for **MyApp**, 
 |------------|---------|---------|
 | **.NET** | 10.0 | Runtime framework |
 | **C#** | Preview (13+) | Programming language |
-| **.NET Aspire** | 9.1.0 | Application orchestration and observability |
+| **.NET Aspire** | 13.0.2 | Application orchestration and observability |
 | **SQL Server** | 2022+ | Workflow state persistence |
 
 ### 3.2 NuGet Packages
@@ -127,9 +127,28 @@ This document describes the architecture and implementation plan for **MyApp**, 
 #### Testing
 
 | Package | Version | Purpose |
+|---------|---------|---------||
 | `xunit` | 2.9.2 | Test framework |
 | `Moq` | 4.20.72 | Mocking framework |
 | `FluentAssertions` | 6.12.2 | Fluent assertions |
+
+#### Authentication
+
+| Package | Version | Purpose |
+|---------|---------|---------||
+| `Microsoft.AspNetCore.Authentication.Google` | 10.0.0 | Google OAuth provider |
+| `Microsoft.AspNetCore.Authentication.Facebook` | 10.0.0 | Facebook OAuth provider |
+| `AspNet.Security.OAuth.GitHub` | 10.0.0 | GitHub OAuth provider |
+| `Microsoft.AspNetCore.Identity.EntityFrameworkCore` | 10.0.0 | ASP.NET Core Identity |
+
+#### Entity Framework Core & Aspire
+
+| Package | Version | Purpose |
+|---------|---------|---------||
+| `Microsoft.EntityFrameworkCore.SqlServer` | 10.0.0 | EF Core SQL Server provider |
+| `Microsoft.EntityFrameworkCore.Design` | 10.0.0 | Design-time EF Core tools |
+| `Aspire.Microsoft.EntityFrameworkCore.SqlServer` | 9.1.0 | Aspire EF Core hosting for SQL Server |
+| `Microsoft.Extensions.ServiceDiscovery` | 9.1.0 | Aspire client service discovery |
 
 ### 3.3 Development Tools
 
@@ -149,14 +168,17 @@ Use the existing directory layout and modify as necessary
 
 | Project | Layer | Responsibility |
 |---------|-------|----------------|
-| **MyApp.Core** | Domain | DTOs, interfaces, domain types |
-| **MyApp.Application** | Application | Orchestrations, validators, use cases |
-| **MyApp.Infrastructure** | Infrastructure | Activities, middleware, external integrations |
-| **MyApp.WebApi** | Presentation | HTTP endpoints, API models, request handling |
-| **MyApp.Worker** | Presentation | Background worker, orchestration processing |
+| **MyApp.Server.Core** | Domain | Entities, Interfaces, domain types, User entity |
+| **MyApp.Server.Application** | Application | Orchestrations, validators, use cases |
+| **MyApp.Server.Infrastructure** | Infrastructure | Activities, middleware, external integrations, DbContext, EF Core configurations |
+| **MyApp.Server.WebApi** | Presentation | HTTP endpoints, API models, request handling, authentication |
+| **MyApp.Server.Worker** | Presentation | Background worker, orchestration processing |
 | **MyApp.AppHost** | Orchestration | Aspire host, resource provisioning |
 | **MyApp.ServiceDefaults** | Cross-cutting | OpenTelemetry, health checks, service config |
 | **MyApp.Tests** | Testing | Unit tests, integration tests |
+| **MyApp.Client.BlazorHybridMobileApp** | Presentation | Maui Blazor Hybrid app with social authentication |
+| **MyApp.Client.BlazorWasmApp** | Presentation | Blazor webassembly web app with social authentication |
+| **MyApp.Shared** | Shared | Shared DTOs between server and client applications |
 
 ### 4.3 Dependency Flow
 
@@ -207,7 +229,7 @@ The solution follows Clean Architecture (also known as Onion Architecture or Hex
 
 ### 5.2 Layer Descriptions
 
-#### Core Layer (MyApp.Core)
+#### Core Layer (MyApp.Server.Core)
 
 The innermost layer containing:
 - **DTOs** (Data Transfer Objects) for workflow inputs and outputs
@@ -216,7 +238,7 @@ The innermost layer containing:
 
 **Key Rule:** This layer has NO external dependencies except for base .NET types.
 
-#### Application Layer (MyApp.Application)
+#### Application Layer (MyApp.Server.Application)
 
 Contains:
 - **Orchestrations** - DTFx `TaskOrchestration<TInput, TOutput>` implementations
@@ -225,7 +247,7 @@ Contains:
 
 **Dependencies:** Core layer only, plus DTFx Core abstractions.
 
-#### Infrastructure Layer (MyApp.Infrastructure)
+#### Infrastructure Layer (MyApp.Server.Infrastructure)
 
 Contains:
 - **Activities** - DTFx `TaskActivity<TInput, TOutput>` implementations
@@ -235,7 +257,7 @@ Contains:
 
 **Dependencies:** Core, Application, plus external packages (DTFx, SQL Server provider).
 
-#### Presentation Layer (MyApp.WebApi, MyApp.Worker)
+#### Presentation Layer (MyApp.Server.WebApi, MyApp.Server.Worker)
 
 Contains:
 - **Endpoints** - HTTP request handlers
@@ -393,7 +415,8 @@ var builder = DistributedApplication.CreateBuilder(args);
 
 // SQL Server for persistence
 var sqlServer = builder.AddSqlServer("sql")
-    .AddDatabase("durabletask");
+    .AddDatabase("durabletask")
+    .AddDatabase("appdb");  // <-- Separate application database
 
 // Worker with 3 replicas for scaling
 var worker = builder.AddProject<Projects.MyApp_Worker>("worker")
@@ -401,12 +424,18 @@ var worker = builder.AddProject<Projects.MyApp_Worker>("worker")
     .WaitFor(sqlServer)
     .WithReplicas(3);  // <-- Scale to 3 instances
 
-// WebApi for ingestion
+// WebApi for ingestion and authentication
 builder.AddProject<Projects.MyApp_WebApi>("webapi")
     .WithReference(sqlServer)
     .WaitFor(sqlServer);
 
+// Client apps (optional - for local development)
+builder.AddProject<Projects.MyApp_Client_BlazorWasmApp>("blazorwasm")
+    .WithReference(webapi);
+
 builder.Build().Run();
+
+// See .github/copilot-instructions.md for complete architecture diagram
 ```
 
 ### 7.3 Concurrency Configuration
@@ -562,7 +591,266 @@ Each activity is a placeholder that simulates document processing:
 
 ## 9. Cross-Cutting Concerns
 
-### 9.1 Logging
+### 9.1 Authentication & Authorization
+
+#### Social Authentication Providers
+
+The application supports authentication through multiple social providers:
+
+| Provider | Client Apps | WebApi | Configuration |
+|----------|-------------|--------|---------------|
+| **Google** | ✅ | ✅ | OAuth 2.0 via Google Cloud Console |
+| **Facebook** | ✅ | ✅ | OAuth 2.0 via Facebook Developer Portal |
+| **GitHub** | ✅ | ✅ | OAuth 2.0 via GitHub Apps |
+
+#### Authentication Flow
+
+```
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│ Client App   │         │   WebApi     │         │  Provider    │
+│ (Blazor)     │         │              │         │ (Google/FB)  │
+└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
+       │                        │                        │
+       │ 1. Click Login         │                        │
+       ├───────────────────────>│                        │
+       │                        │ 2. Redirect to OAuth   │
+       │                        ├───────────────────────>│
+       │                        │                        │
+       │                        │ 3. User Authenticates  │
+       │                        │<───────────────────────│
+       │                        │                        │
+       │ 4. Return with Token   │                        │
+       │<───────────────────────│                        │
+       │                        │                        │
+       │ 5. Store Auth State    │                        │
+       │                        │                        │
+```
+
+#### Identity Configuration
+
+**WebApi (Program.cs):**
+```csharp
+// Configure Identity
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddDefaultTokenProviders();
+
+// Configure Authentication
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = GoogleDefaults.AuthenticationScheme;
+})
+.AddCookie()
+.AddGoogle(options =>
+{
+    options.ClientId = builder.Configuration["Authentication:Google:ClientId"];
+    options.ClientSecret = builder.Configuration["Authentication:Google:ClientSecret"];
+})
+.AddFacebook(options =>
+{
+    options.AppId = builder.Configuration["Authentication:Facebook:AppId"];
+    options.AppSecret = builder.Configuration["Authentication:Facebook:AppSecret"];
+})
+.AddGitHub(options =>
+{
+    options.ClientId = builder.Configuration["Authentication:GitHub:ClientId"];
+    options.ClientSecret = builder.Configuration["Authentication:GitHub:ClientSecret"];
+});
+
+builder.Services.AddAuthorization();
+```
+
+#### Client-Side Authentication
+
+**Blazor WASM (Program.cs):**
+```csharp
+builder.Services.AddAuthorizationCore();
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddScoped<AuthenticationStateProvider, CustomAuthenticationStateProvider>();
+```
+
+**Blazor Hybrid MAUI (MauiProgram.cs):**
+```csharp
+builder.Services.AddAuthorizationCore();
+builder.Services.AddMauiBlazorWebView();
+builder.Services.AddScoped<AuthenticationStateProvider, MauiAuthenticationStateProvider>();
+```
+
+#### Page-Level Authorization
+
+**Home Page (Anonymous Access):**
+```razor
+@page "/"
+@* No @attribute [Authorize] - accessible to all *@
+
+<h1>Welcome to MyApp</h1>
+<p>This page is accessible to everyone.</p>
+
+<AuthorizeView>
+    <Authorized>
+        <p>Hello, @context.User.Identity?.Name!</p>
+    </Authorized>
+    <NotAuthorized>
+        <p><a href="/login">Sign in</a> to access more features.</p>
+    </NotAuthorized>
+</AuthorizeView>
+```
+
+**Protected Page (Requires Authentication):**
+```razor
+@page "/documents"
+@attribute [Authorize]
+
+<h1>My Documents</h1>
+@* Only authenticated users can access this page *@
+```
+
+#### Authentication Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------||
+| `/api/auth/login/{provider}` | GET | Initiate OAuth flow (provider: google, facebook, github) |
+| `/api/auth/callback` | GET | OAuth callback handler |
+| `/api/auth/logout` | POST | Sign out user and clear session |
+| `/api/auth/user` | GET | Get current user information |
+
+#### Configuration Keys
+
+```json
+// appsettings.json
+{
+  "Authentication": {
+    "Google": {
+      "ClientId": "your-client-id.apps.googleusercontent.com",
+      "ClientSecret": "your-client-secret"
+    },
+    "Facebook": {
+      "AppId": "your-app-id",
+      "AppSecret": "your-app-secret"
+    },
+    "GitHub": {
+      "ClientId": "your-client-id",
+      "ClientSecret": "your-client-secret"
+    }
+  }
+}
+```
+
+**Security Considerations:**
+- Store secrets in Azure Key Vault, AWS Secrets Manager, or user secrets for development
+- Use HTTPS for all authentication flows
+- Implement CSRF protection for state tokens
+- Set appropriate cookie security flags (HttpOnly, Secure, SameSite)
+
+### 9.2 Entity Framework Core
+
+#### DbContext Configuration
+
+**ApplicationDbContext.cs:**
+```csharp
+public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
+{
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Document> Documents { get; set; }
+    // Additional DbSets for domain entities
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        
+        // Apply all entity configurations
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+    }
+}
+```
+
+#### Entity Configuration Files
+
+Each entity has a dedicated configuration file following the pattern:
+
+**Data/Configurations/DocumentConfiguration.cs:**
+```csharp
+public class DocumentConfiguration : IEntityTypeConfiguration<Document>
+{
+    public void Configure(EntityTypeBuilder<Document> builder)
+    {
+        builder.ToTable("Documents");
+        
+        builder.HasKey(d => d.Id);
+        
+        builder.Property(d => d.FileName)
+            .IsRequired()
+            .HasMaxLength(255);
+        
+        builder.Property(d => d.RepositoryName)
+            .IsRequired()
+            .HasMaxLength(100);
+        
+        builder.HasIndex(d => d.CorrelationId)
+            .IsUnique();
+            
+        // Add relationships, indexes, etc.
+    }
+}
+```
+
+#### Aspire EF Core Integration
+
+**WebApi (Program.cs):**
+```csharp
+// Use Aspire EF Core hosting package
+builder.AddSqlServerDbContext<ApplicationDbContext>("appdb", 
+    configureDbContextOptions: options =>
+    {
+        options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
+        options.EnableDetailedErrors(builder.Environment.IsDevelopment());
+    });
+```
+
+**Required NuGet Packages:**
+- `Aspire.Microsoft.EntityFrameworkCore.SqlServer` (9.1.0) - Hosting integration
+- `Microsoft.Extensions.ServiceDiscovery` (9.1.0) - Service discovery client
+
+**Migration Commands:**
+```bash
+# Add migration
+dotnet ef migrations add InitialCreate --project MyApp.Server.Infrastructure --startup-project MyApp.Server.WebApi
+
+# Update database
+dotnet ef database update --project MyApp.Server.Infrastructure --startup-project MyApp.Server.WebApi
+```
+
+#### Repository Pattern (Optional)
+
+```csharp
+public interface IRepository<T> where T : class
+{
+    Task<T?> GetByIdAsync(int id);
+    Task<IEnumerable<T>> GetAllAsync();
+    Task AddAsync(T entity);
+    Task UpdateAsync(T entity);
+    Task DeleteAsync(T entity);
+}
+
+public class Repository<T> : IRepository<T> where T : class
+{
+    private readonly ApplicationDbContext _context;
+    
+    public Repository(ApplicationDbContext context)
+    {
+        _context = context;
+    }
+    
+    // Implementation...
+}
+```
+
+### 9.3 Logging
 
 **Approach:** Middleware-based, not base class inheritance
 
@@ -606,7 +894,7 @@ public static class WorkflowTelemetry
 | Histogram | `.duration` suffix | `workflow.activity.duration` |
 | UpDownCounter | Singular noun | `workflow.active` |
 
-### 9.3 Input/Output Recording
+### 9.5 Input/Output Recording
 
 **Captured as span events** for proper timestamping:
 
@@ -628,7 +916,7 @@ public static void RecordInput<T>(Activity activity, T input) where T : class
 - Automatically redact fields containing: `password`, `secret`, `apikey`, `token`, `credential`
 - Truncate large payloads to 4KB, preview at 1KB
 
-### 9.4 Performance Metrics
+### 9.6 Performance Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -709,6 +997,55 @@ optional-client-id-12345
 }
 ```
 
+#### Authentication Endpoints
+
+##### GET /api/auth/login/{provider}
+
+**Purpose:** Initiate OAuth login flow
+
+**Parameters:**
+- `provider`: OAuth provider name (google, facebook, github)
+
+**Response:** Redirect to OAuth provider's authorization URL
+
+##### GET /api/auth/callback
+
+**Purpose:** OAuth callback handler (automatically invoked by OAuth provider)
+
+**Response:** Sets authentication cookie and redirects to application
+
+##### POST /api/auth/logout
+
+**Purpose:** Sign out current user
+
+**Response (200 OK):**
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+##### GET /api/auth/user
+
+**Purpose:** Get current authenticated user information
+
+**Response (200 OK):**
+```json
+{
+  "id": "user-id",
+  "email": "user@example.com",
+  "name": "User Name",
+  "isAuthenticated": true
+}
+```
+
+**Response (401 Unauthorized):**
+```json
+{
+  "isAuthenticated": false
+}
+```
+
 ### 10.2 Validation
 
 Using **FluentValidation** with auto-validation via endpoint group filter:
@@ -783,7 +1120,7 @@ builder.Services.AddOpenApi(options =>
 });
 ```
 
-#### Endpoint Configuration (MyApp.WebApi.csproj)
+#### Endpoint Configuration (MyApp.Server.WebApi.csproj)
 
 ```xml
 <PropertyGroup>
@@ -816,7 +1153,7 @@ rules:
 
 Run linting:
 ```bash
-spectral lint src/MyApp.WebApi/MyApp.WebApi.json
+spectral lint src/MyApp.Server.WebApi/MyApp.Server.WebApi.json
 ```
 
 ---
@@ -913,17 +1250,7 @@ public class IntegrationTests : IAsyncLifetime
 
 ## 12. Configuration Management
 
-### 12.1 Configuration Files
-
-| File | Location | Purpose |
-|------|----------|---------|
-| `global.json` | Solution root | .NET SDK version pinning |
-| `Directory.Build.props` | Solution root | Shared MSBuild properties |
-| `Directory.Packages.props` | Solution root | Centralized package versions |
-| `NuGet.config` | Solution root | NuGet package sources |
-| `appsettings.json` | Each runnable project | Runtime configuration |
-
-### 12.2 Environment-Specific Configuration
+### 12.1 Environment-Specific Configuration
 
 ```json
 // appsettings.Development.json
@@ -950,13 +1277,23 @@ public class IntegrationTests : IAsyncLifetime
 ### 12.3 Connection Strings
 
 **Development (via Aspire):**
-```
-Server={sql.bindings.tcp.host},{sql.bindings.tcp.port};Database=durabletask;User Id=sa;Password=...;TrustServerCertificate=True
-```
+```json
+{
+  "ConnectionStrings": {
+    "durabletask": "Server={sql.bindings.tcp.host},{sql.bindings.tcp.port};Database=durabletask;User Id=sa;Password=...;TrustServerCertificate=True",
+    "appdb": "Server={sql.bindings.tcp.host},{sql.bindings.tcp.port};Database=appdb;User Id=sa;Password=...;TrustServerCertificate=True"
+  }
+}
+```2
 
 **Production:**
-```
-Server=sql-prod.internal;Database=durabletask;User Id=app_user;Password=...;Encrypt=True
+```json
+{
+  "ConnectionStrings": {
+    "durabletask": "Server=sql-prod.internal;Database=durabletask;User Id=app_user;Password=...;Encrypt=True",
+    "appdb": "Server=sql-prod.internal;Database=appdb;User Id=app_user;Password=...;Encrypt=True"
+  }
+}
 ```
 
 ---
@@ -991,6 +1328,9 @@ services:
     image: myapp-webapi:latest
     environment:
       ConnectionStrings__durabletask: Server=sql;Database=durabletask;...
+      ConnectionStrings__appdb: Server=sql;Database=appdb;...
+      Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID}
+      Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET}
     ports:
       - "8080:8080"
     depends_on:
@@ -1000,6 +1340,7 @@ services:
     image: myapp-worker:latest
     environment:
       ConnectionStrings__durabletask: Server=sql;Database=durabletask;...
+      ConnectionStrings__appdb: Server=sql;Database=appdb;...
     depends_on:
       - sql
     deploy:
@@ -1077,9 +1418,27 @@ spec:
 
 ---
 
-## Appendix A: Quick Reference
+## Appendix A: Architecture Diagram
 
-### A.1 Common Commands
+For a complete visual representation of the solution architecture, including all projects and their dependency tree, see:
+
+**[.github/copilot-instructions.md](.github/copilot-instructions.md)**
+
+The diagram includes:
+- All solution projects (WebApi, Worker, Client apps, Shared libraries)
+- Project dependencies and references
+- Data flow between components
+- Database connections (durabletask and appdb)
+- Authentication flow with social providers
+- Aspire orchestration architecture
+
+This diagram is kept up-to-date with solution changes and serves as the source of truth for understanding project relationships.
+
+---
+
+## Appendix B: Quick Reference
+
+### B.1 Common Commands
 
 ```bash
 # Build solution
@@ -1092,27 +1451,30 @@ dotnet test
 dotnet run --project MyApp.AppHost
 
 # Run specific project
-dotnet run --project src/MyApp.WebApi
+dotnet run --project src/MyApp.Server.WebApi
 
 # Lint OpenAPI document
-spectral lint src/MyApp.WebApi/MyApp.WebApi.json
+spectral lint src/MyApp.Server.WebApi/MyApp.Server.WebApi.json
 ```
 
-### A.2 Key File Locations
+### B.2 Key File Locations
 
 | Purpose | Path |
 |---------|------|
-| Orchestration | `src/MyApp.Application/Workflows/IngestDocumentOrchestration.cs` |
-| Activities | `src/MyApp.Infrastructure/Activities/` |
-| Middleware | `src/MyApp.Infrastructure/Middleware/` |
-| API Endpoints | `src/MyApp.WebApi/Endpoints/` |
-| Validators | `src/MyApp.Application/Validators/` |
-| Worker Host | `MyApp.Worker/Program.cs` |
+| Orchestration | `src/MyApp.Server.Application/Workflows/IngestDocumentOrchestration.cs` |
+| DbContext | `src/MyApp.Server.Infrastructure/Data/ApplicationDbContext.cs` |
+| Entity Configurations | `src/MyApp.Server.Infrastructure/Data/Configurations/` |
+| Authentication Endpoints | `src/MyApp.Server.WebApi/Endpoints/AuthEndpoints.cs` |
+| Activities | `src/MyApp.Server.Infrastructure/Activities/` |
+| Middleware | `src/MyApp.Server.Infrastructure/Middleware/` |
+| API Endpoints | `src/MyApp.Server.WebApi/Endpoints/` |
+| Validators | `src/MyApp.Server.Application/Validators/` |
+| Worker Host | `MyApp.Server.Worker/Program.cs` |
 | Aspire Host | `MyApp.AppHost/Program.cs` |
-| OpenAPI Document | `src/MyApp.WebApi/MyApp.WebApi.json` |
-| Spectral Config | `src/MyApp.WebApi/.spectral.yml` |
+| OpenAPI Document | `src/MyApp.Server.WebApi/MyApp.Server.WebApi.json` |
+| Spectral Config | `src/MyApp.Server.WebApi/.spectral.yml` |
 
-### A.3 Troubleshooting
+### B.3 Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
@@ -1120,6 +1482,9 @@ spectral lint src/MyApp.WebApi/MyApp.WebApi.json
 | Activity timeout | Increase `MaxConcurrentActivities` or add workers |
 | Worker not picking up tasks | Check SQL Server connection and TaskHubName |
 | Orchestration stuck | Check for non-deterministic code (DateTime.Now, Guid.NewGuid) |
+| OAuth redirect fails | Verify redirect URIs in provider console match application settings |
+| User not authenticated | Check cookie settings, ensure HTTPS in production |
+| EF migrations fail | Ensure correct connection string and database exists |
 
 ---
 
