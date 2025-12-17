@@ -1,6 +1,6 @@
-using MyApp.Web.Components;
+using MyApp.Server.WebApi.Components;
 using MyApp.Shared.Services;
-using MyApp.Web.Services;
+using MyApp.Server.WebApi.Services;
 
 namespace MyApp;
 
@@ -44,7 +44,7 @@ public class Program
             .AddInteractiveWebAssemblyRenderMode()
             .AddAdditionalAssemblies(
                 typeof(MyApp.Shared._Imports).Assembly,
-                typeof(MyApp.Web.Client._Imports).Assembly);
+                typeof(MyApp.Client.BlazorWasmApp._Imports).Assembly);
 
         app.Run();
     }

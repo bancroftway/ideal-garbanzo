@@ -1,6 +1,6 @@
 using MyApp.Shared.Services;
 
-namespace MyApp.Web.Services;
+namespace MyApp.Server.WebApi.Services;
 
 public class FormFactor : IFormFactor
 {

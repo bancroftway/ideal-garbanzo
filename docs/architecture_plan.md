@@ -143,70 +143,7 @@ This document describes the architecture and implementation plan for **MyApp**, 
 ## 4. Solution Structure
 
 ### 4.1 Directory Layout
-
-```
-MyApp/
-├── .github/
-│   └── copilot-instructions.md     # AI assistant guidelines
-├── docs/
-│   └── architecture-plan.md        # This document
-├── MyApp.AppHost/                   # Aspire orchestration host
-│   ├── MyApp.AppHost.csproj
-│   └── Program.cs
-├── MyApp.ServiceDefaults/           # Shared service configuration
-│   ├── MyApp.ServiceDefaults.csproj
-│   └── Extensions.cs
-├── MyApp.Worker/                    # Background worker host
-│   ├── MyApp.Worker.csproj
-│   ├── Program.cs
-│   └── appsettings.json
-├── src/
-│   ├── MyApp.Core/                  # Domain layer
-│   │   └── Workflows/
-│   │       └── IngestDocument/
-│   │           ├── IngestDocumentRequest.cs
-│   │           ├── IngestDocumentResponse.cs
-│   │           └── SummarizeMarkdownInput.cs
-│   ├── MyApp.Application/           # Application layer
-│   │   ├── Validators/
-│   │   │   └── IngestDocumentApiRequestValidator.cs
-│   │   └── Workflows/
-│   │       └── IngestDocumentOrchestration.cs
-│   ├── MyApp.Infrastructure/        # Infrastructure layer
-│   │   ├── Activities/
-│   │   │   ├── IngestDocumentUsingDoclingActivity.cs
-│   │   │   ├── IngestDocumentUsingMarkitDownActivity.cs
-│   │   │   ├── IngestDocumentUsingMarkerActivity.cs
-│   │   │   └── SummarizeMarkdownActivity.cs
-│   │   ├── Hosting/
-│   │   │   └── DurableTaskHostedService.cs
-│   │   ├── Middleware/
-│   │   │   ├── LoggingActivityMiddleware.cs
-│   │   │   ├── LoggingOrchestrationMiddleware.cs
-│   │   │   ├── PerformanceActivityMiddleware.cs
-│   │   │   └── PerformanceOrchestrationMiddleware.cs
-│   │   ├── Telemetry/
-│   │   │   └── TelemetryHelpers.cs
-│   │   └── InfrastructureServiceExtensions.cs
-│   └── MyApp.WebApi/                # Presentation layer
-│       ├── .spectral.yml            # Spectral linting configuration
-│       ├── Endpoints/
-│       │   ├── DocumentEndpoints.cs
-│       │   └── WorkflowEndpoints.cs
-│       ├── Models/
-│       │   └── IngestDocumentApiRequest.cs
-│       ├── MyApp.WebApi.json         # Generated OpenAPI 3.1 document
-│       ├── Program.cs
-│       └── appsettings.json
-└── tests/
-    └── MyApp.Tests/                 # Unit tests
-        ├── Validators/
-        │   └── IngestDocumentApiRequestValidatorTests.cs
-        ├── Workflows/
-        │   └── IngestDocumentOrchestrationTests.cs
-        └── Telemetry/
-            └── TelemetryHelpersTests.cs
-```
+Use the existing directory layout and modify as necessary
 
 ### 4.2 Project Responsibilities
 

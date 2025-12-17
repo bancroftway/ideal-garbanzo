@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\MyApp.ServiceDefaults\MyApp.ServiceDefaults.csproj" />
-    <ProjectReference Include="..\MyApp.Web.Client\MyApp.Web.Client.csproj" />
+    <ProjectReference Include="..\MyApp.Client.BlazorWasmApp\MyApp.Client.BlazorWasmApp.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.1" />
   </ItemGroup>
 
