@@ -380,17 +380,33 @@ public static class LoggingMiddleware
 
 ### 6.4 SQL Server Schema
 
-The DTFx SQL Server provider creates the following tables:
+**IMPORTANT:** The solution uses **two separate SQL Server databases** to maintain clear separation of concerns:
+
+1. **`durabletask` database** - DTFx workflow orchestration state (managed by DTFx)
+2. **`appdb` database** - Application-specific data (managed by Entity Framework Core)
+
+#### DTFx Database (`durabletask`)
+
+The DTFx SQL Server provider automatically creates the following tables in the `durabletask` database:
 
 | Table | Purpose |
 |-------|---------|
 | `dt.Instances` | Orchestration instance metadata |
-| `dt.History` | Event history for replay |
+| `dt.History` | Event history for deterministic replay |
 | `dt.NewEvents` | Pending events queue |
 | `dt.NewTasks` | Pending activity tasks |
 | `dt.Versions` | Schema version tracking |
 
 The schema is created automatically by calling `CreateIfNotExistsAsync()` on the orchestration service.
+
+**Key Points:**
+- Never manually modify DTFx tables
+- DTFx manages its own schema migrations
+- Connection string points to `durabletask` database only
+
+#### Application Database (`appdb`)
+
+See section 9.2 for Entity Framework Core configuration and application-specific tables (Users, Documents, Identity tables, etc.).
 
 ---
 
@@ -413,10 +429,10 @@ Workers are scaled using Aspire's `WithReplicas()` method:
 // Program.cs in MyApp.AppHost
 var builder = DistributedApplication.CreateBuilder(args);
 
-// SQL Server for persistence
+// SQL Server with TWO separate databases
 var sqlServer = builder.AddSqlServer("sql")
-    .AddDatabase("durabletask")
-    .AddDatabase("appdb");  // <-- Separate application database
+    .AddDatabase("durabletask")  // <-- DTFx workflow orchestration state only
+    .AddDatabase("appdb");        // <-- Application data: Identity, Documents, and domain entities
 
 // Worker with 3 replicas for scaling
 var worker = builder.AddProject<Projects.MyApp_Worker>("worker")
@@ -464,7 +480,7 @@ Each worker's concurrency is configured in `appsettings.json`:
 | **CPU-bound activities** | Scale workers horizontally, set `MaxConcurrentActivities` = CPU cores |
 | **I/O-bound activities** | Increase `MaxConcurrentActivities` per worker |
 | **Long-running activities** | Consider separate activity-only workers |
-| **Database connection limits** | Ensure SQL Server can handle `Workers × MaxConcurrentActivities` connections |
+| **Database connection limits** | Ensure SQL Server can handle connections to BOTH databases: `durabletask` (Workers × MaxConcurrentActivities) and `appdb` (WebApi + Worker connections for EF Core) |
 
 ### 7.5 Load Balancing
 
@@ -1276,6 +1292,10 @@ public class IntegrationTests : IAsyncLifetime
 
 ### 12.3 Connection Strings
 
+**Two Separate Databases Required:**
+- **`durabletask`** - DTFx workflow orchestration state (used by Worker and WebApi for TaskHubClient)
+- **`appdb`** - Application data, ASP.NET Core Identity, domain entities (used by WebApi and Worker via EF Core)
+
 **Development (via Aspire):**
 ```json
 {
@@ -1290,10 +1310,17 @@ public class IntegrationTests : IAsyncLifetime
 ```json
 {
   "ConnectionStrings": {
-    "durabletask": "Server=sql-prod.internal;Database=durabletask;User Id=app_user;Password=...;Encrypt=True",
+    "durabletask": "Server=sql-prod.internal;Database=durabletask;User Id=dtfx_user;Password=...;Encrypt=True",
     "appdb": "Server=sql-prod.internal;Database=appdb;User Id=app_user;Password=...;Encrypt=True"
   }
 }
+```
+
+**Production Best Practices:**
+- Use separate service accounts for each database (`dtfx_user` vs `app_user`)
+- Grant `dtfx_user` only necessary permissions on `durabletask` database
+- Grant `app_user` only necessary permissions on `appdb` database
+- Consider separate SQL Server instances for additional isolation if needed
 ```
 
 ---
@@ -1327,7 +1354,9 @@ services:
   webapi:
     image: myapp-webapi:latest
     environment:
+      # DTFx database for workflow orchestration
       ConnectionStrings__durabletask: Server=sql;Database=durabletask;...
+      # Application database for Identity, Documents, etc.
       ConnectionStrings__appdb: Server=sql;Database=appdb;...
       Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID}
       Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET}
@@ -1339,7 +1368,9 @@ services:
   worker:
     image: myapp-worker:latest
     environment:
+      # DTFx database for workflow orchestration
       ConnectionStrings__durabletask: Server=sql;Database=durabletask;...
+      # Application database for accessing domain entities in activities
       ConnectionStrings__appdb: Server=sql;Database=appdb;...
     depends_on:
       - sql
@@ -1480,11 +1511,13 @@ spectral lint src/MyApp.Server.WebApi/MyApp.Server.WebApi.json
 |-------|----------|
 | "Duplicate instance ID" | Client is resubmitting - this is expected idempotency behavior |
 | Activity timeout | Increase `MaxConcurrentActivities` or add workers |
-| Worker not picking up tasks | Check SQL Server connection and TaskHubName |
+| Worker not picking up tasks | Check `durabletask` database connection and TaskHubName |
 | Orchestration stuck | Check for non-deterministic code (DateTime.Now, Guid.NewGuid) |
 | OAuth redirect fails | Verify redirect URIs in provider console match application settings |
 | User not authenticated | Check cookie settings, ensure HTTPS in production |
-| EF migrations fail | Ensure correct connection string and database exists |
+| EF migrations fail | Ensure `appdb` connection string is correct and database exists (separate from `durabletask`) |
+| Wrong database for DTFx | DTFx tables (`dt.*`) must be in `durabletask` database, NOT `appdb` |
+| Connection pool exhausted | Check that both `durabletask` and `appdb` connection strings have appropriate pool sizes |
 
 ---
 
