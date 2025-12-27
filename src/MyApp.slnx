@@ -1,8 +1,4 @@
 <Solution>
   <Project Path="MyApp.AppHost/MyApp.AppHost.csproj" />
   <Project Path="MyApp.ServiceDefaults/MyApp.ServiceDefaults.csproj" />
-  <Project Path="MyApp/MyApp.Shared/MyApp.Shared.csproj" />
-  <Project Path="MyApp/MyApp.Client.BlazorWasmApp/MyApp.Client.BlazorWasmApp.csproj" />
-  <Project Path="MyApp/MyApp.Server.WebApi/MyApp.Server.WebApi.csproj" />
-  <Project Path="MyApp/MyApp.Client.BlazorHybridMobileApp/MyApp.Client.BlazorHybridMobileApp.csproj" />
 </Solution>

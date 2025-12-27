@@ -6,13 +6,15 @@ This document provides context and architectural guidance for GitHub Copilot whe
 
 ## Solution Overview
 
-**MyApp** is a self-hosted workflow orchestration application built with:
+**MyApp** is a self-hosted AI-powered workflow orchestration application built with:
 - .NET 10 and C# 13+
-- Azure Durable Task Framework (DTFx) with SQL Server persistence
+- Microsoft Agent Framework Workflows with Redis checkpoint persistence
+- AG-UI Protocol for real-time AI streaming
 - .NET Aspire for orchestration and observability
 - ASP.NET Core Identity with social authentication
-- Entity Framework Core for data access
-- Blazor WebAssembly and Blazor Hybrid MAUI clients
+- Entity Framework Core with PostgreSQL for data access
+- React + CopilotKit v1.50 web frontend
+- Capacitor for iOS/Android mobile apps
 
 ---
 
@@ -26,10 +28,11 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │                        (MyApp.AppHost)                                      │
 │                                                                             │
 │  Orchestrates:                                                              │
-│  - SQL Server (2 databases: durabletask, appdb)                            │
-│  - WebApi (with authentication)                                            │
-│  - Worker (3 replicas for horizontal scaling)                              │
-│  - Client Apps (optional, for local development)                           │
+│  - PostgreSQL (appdb database)                                              │
+│  - Redis (workflow checkpoints and caching)                                 │
+│  - WebApi (with authentication + AG-UI server)                              │
+│  - Worker (single instance - Phase 1)                                       │
+│  - React Frontend (Vite development server)                                 │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
               ┌───────────────┼───────────────┐
@@ -38,9 +41,9 @@ This document provides context and architectural guidance for GitHub Copilot whe
     ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
     │   WebApi     │  │   Worker     │  │ ServiceDefaults  │
     │              │  │              │  │                  │
-    │ - REST API   │  │ - DTFx Host  │  │ - Telemetry      │
-    │ - Auth       │  │ - Activities │  │ - Health         │
-    │ - Endpoints  │  │ - Workers    │  │ - Config         │
+    │ - REST API   │  │ - Workflows  │  │ - Telemetry      │
+    │ - AG-UI      │  │ - Activities │  │ - Health         │
+    │ - Auth       │  │ - Redis      │  │ - Config         │
     └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘
            │                 │                    │
            │                 │                    │
@@ -77,25 +80,25 @@ This document provides context and architectural guidance for GitHub Copilot whe
 
 
     ┌──────────────────────────┐       ┌──────────────────────────┐
-    │  Blazor WASM Client      │       │  Blazor Hybrid MAUI      │
+    │  React + CopilotKit      │       │  Capacitor Mobile        │
+    │  (Web Browser)           │       │  (iOS/Android)           │
     │                          │       │                          │
-    │ - Web Browser            │       │ - iOS/Android/Windows    │
+    │ - AG-UI Protocol         │       │ - AG-UI Protocol         │
     │ - Social Auth            │       │ - Social Auth            │
-    │ - Anonymous Home Page    │       │ - Anonymous Home Page    │
+    │ - CopilotKit v1.50       │       │ - Native Features        │
     └────────┬─────────────────┘       └────────┬─────────────────┘
              │                                  │
-             │         References               │
-             │         MyApp.Shared             │
+             │         AG-UI (SSE)              │
+             │         /api/agent               │
              └────────┬─────────────────────────┘
                       │
                       ▼
            ┌─────────────────────┐
-           │    Shared           │
+           │    WebApi + AG-UI   │
            │                     │
-           │ - DTOs              │
-           │ - Routes            │
-           │ - Components        │
-           │ - Services          │
+           │ - REST Endpoints    │
+           │ - AG-UI Server      │
+           │ - Authentication    │
            └─────────────────────┘
 ```
 
@@ -106,15 +109,15 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │                         Client Applications                          │
 │                                                                      │
 │  ┌────────────────────┐           ┌────────────────────┐            │
-│  │  Blazor WASM       │           │  Blazor MAUI       │            │
-│  │  (Browser)         │           │  (Mobile/Desktop)  │            │
+│  │  React + CopilotKit│           │  Capacitor Mobile  │            │
+│  │  (Browser)         │           │  (iOS/Android)     │            │
 │  └─────────┬──────────┘           └─────────┬──────────┘            │
 │            │                                 │                       │
 │            └────────────┬────────────────────┘                       │
 │                         │                                            │
 └─────────────────────────┼────────────────────────────────────────────┘
                           │
-                          │ HTTPS (REST API)
+                          │ AG-UI (SSE) + REST API
                           │
                           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -128,6 +131,7 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │                          │                                           │
 │  ┌───────────────────────▼───────────────────────┐                  │
 │  │  Endpoints                                    │                  │
+│  │  - POST /api/agent (AG-UI streaming)          │                  │
 │  │  - POST /api/documents/ingest                 │                  │
 │  │  - GET  /api/workflows/{id}/status            │                  │
 │  │  - GET  /api/auth/login/{provider}            │                  │
@@ -135,7 +139,7 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │  │  - GET  /api/auth/user                        │                  │
 │  └───────────────────────┬───────────────────────┘                  │
 │                          │                                           │
-│                          │ TaskHubClient                             │
+│                          │ WorkflowExecutor                          │
 │                          │                                           │
 └──────────────────────────┼───────────────────────────────────────────┘
                            │
@@ -143,10 +147,10 @@ This document provides context and architectural guidance for GitHub Copilot whe
            │               │               │
            ▼               ▼               ▼
 ┌────────────────┐  ┌──────────────────────────────────┐
-│  SQL Server    │  │      Durable Task Framework      │
+│  PostgreSQL    │  │   Microsoft Agent Framework      │
 │                │  │                                  │
 │  Database:     │  │  ┌────────────────────────────┐  │
-│  - appdb       │◄─┼──│  Orchestration Instance    │  │
+│  - appdb       │◄─┼──│  Workflow Instance         │  │
 │                │  │  │  - IngestDocument          │  │
 │  Tables:       │  │  └────────┬───────────────────┘  │
 │  - Users       │  │           │                      │
@@ -156,16 +160,16 @@ This document provides context and architectural guidance for GitHub Copilot whe
 └────────────────┘  │  │                 │         │  │
                     │  ▼                 ▼         ▼  │
 ┌────────────────┐  │ ┌──────┐      ┌──────┐  ┌──────┐│
-│  SQL Server    │  │ │ Act1 │      │ Act2 │  │ Act3 ││
+│  Redis         │  │ │ Act1 │      │ Act2 │  │ Act3 ││
 │                │  │ │Docling│     │Markit│  │Marker││
-│  Database:     │  │ └──────┘      └──────┘  └──────┘│
-│  - durabletask │◄─┤           Fan-in │              │
-│                │  │                  ▼              │
-│  Tables:       │  │            ┌──────────┐        │
-│  - Instances   │  │            │  Summary │        │
-│  - History     │  │            └──────────┘        │
-│  - NewEvents   │  │                                │
-│  - NewTasks    │  └────────────────────────────────┘
+│  Purpose:      │  │ └──────┘      └──────┘  └──────┘│
+│  - Checkpoints │◄─┤           Fan-in │              │
+│  - Cache       │  │                  ▼              │
+│  - Pub/Sub     │  │            ┌──────────┐        │
+│                │  │            │  Summary │        │
+│                │  │            └──────────┘        │
+│                │  │                                │
+│                │  └────────────────────────────────┘
 └────────────────┘                  ▲
                                     │
                         ┌───────────┴───────────┐
@@ -184,7 +188,7 @@ This document provides context and architectural guidance for GitHub Copilot whe
 ```
 ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 │ Client App   │         │   WebApi     │         │  OAuth       │
-│ (Blazor)     │         │              │         │  Provider    │
+│ (React/Mobile│         │              │         │  Provider    │
 └──────┬───────┘         └──────┬───────┘         └──────┬───────┘
        │                        │                        │
        │ 1. Click "Login with   │                        │
@@ -240,9 +244,9 @@ MyApp.slnx
 │   ├── MyApp.Server.Infrastructure        [Infrastructure Layer]
 │   ├── MyApp.Server.WebApi                [Presentation - API]
 │   ├── MyApp.Server.Worker                [Presentation - Worker]
-│   ├── MyApp.Client.BlazorWasmApp         [Client - Web]
-│   ├── MyApp.Client.BlazorHybridMobileApp [Client - Mobile/Desktop]
-│   └── MyApp.Shared                       [Shared - DTOs/Components]
+│   └── MyApp.Shared                       [Shared - DTOs]
+├── ui/                                    [React + CopilotKit Frontend]
+└── mobile/                                [Capacitor iOS/Android]
 ```
 
 ### Dependency References
@@ -269,8 +273,10 @@ MyApp.slnx
 | Technology | Purpose |
 |------------|---------|
 | **.NET 10** | Runtime framework |
-| **Durable Task Framework** | Workflow orchestration |
-| **SQL Server** | Persistence (2 databases) |
+| **Microsoft Agent Framework Workflows** | Workflow orchestration |
+| **PostgreSQL** | Application database |
+| **Redis** | Workflow checkpoints and caching |
+| **AG-UI Protocol** | Real-time AI streaming (SSE) |
 | **ASP.NET Core Identity** | User authentication/authorization |
 | **Entity Framework Core** | ORM for appdb |
 | **.NET Aspire** | Application orchestration |
@@ -281,9 +287,9 @@ MyApp.slnx
 
 | Technology | Purpose |
 |------------|---------|
-| **Blazor WebAssembly** | Web client |
-| **Blazor Hybrid (MAUI)** | Mobile/Desktop client |
-| **AuthenticationStateProvider** | Client-side auth state |
+| **React + Vite** | Web application |
+| **CopilotKit v1.50** | AI chat components |
+| **Capacitor** | iOS/Android mobile apps |
 
 ### Authentication Providers
 
@@ -297,16 +303,7 @@ MyApp.slnx
 
 ## Database Schema
 
-### Database: durabletask (Durable Task Framework)
-
-| Table | Purpose |
-|-------|---------|
-| `dt.Instances` | Orchestration instance metadata |
-| `dt.History` | Event history for deterministic replay |
-| `dt.NewEvents` | Pending events queue |
-| `dt.NewTasks` | Pending activity tasks |
-
-### Database: appdb (Application Data)
+### PostgreSQL: appdb (Application Data)
 
 | Table | Purpose |
 |-------|---------|
@@ -319,9 +316,22 @@ MyApp.slnx
 | `AspNetUserRoles` | User-role mappings |
 | `AspNetUserTokens` | OAuth tokens |
 
+### Redis (Workflow State)
+
+| Key Pattern | Purpose |
+|-------------|---------|
+| `workflow:{id}:checkpoint:{name}` | Superstep checkpoint data |
+| `workflow:{id}:state` | Current workflow state |
+
 ---
 
 ## API Endpoints
+
+### AG-UI (AI Streaming)
+
+| Endpoint | Method | Auth Required | Purpose |
+|----------|--------|---------------|---------|
+| `/api/agent` | POST | **Yes** | AG-UI streaming endpoint (SSE) |
 
 ### Document Management
 
@@ -349,41 +359,6 @@ MyApp.slnx
 
 ---
 
-## Client Application Routing
-
-### Anonymous Access (Home Page)
-
-Both Blazor WASM and Blazor Hybrid apps allow anonymous access to the home page:
-
-```razor
-@page "/"
-@* No [Authorize] attribute - accessible to all *@
-
-<h1>Welcome to MyApp</h1>
-
-<AuthorizeView>
-    <Authorized>
-        <p>Hello, @context.User.Identity?.Name!</p>
-    </Authorized>
-    <NotAuthorized>
-        <a href="/login">Sign in</a>
-    </NotAuthorized>
-</AuthorizeView>
-```
-
-### Protected Pages
-
-All other pages require authentication:
-
-```razor
-@page "/documents"
-@attribute [Authorize]
-
-<h1>My Documents</h1>
-```
-
----
-
 ## Configuration
 
 ### Connection Strings
@@ -391,8 +366,8 @@ All other pages require authentication:
 ```json
 {
   "ConnectionStrings": {
-    "durabletask": "Server=localhost;Database=durabletask;...",
-    "appdb": "Server=localhost;Database=appdb;..."
+    "appdb": "Host=localhost;Database=appdb;...",
+    "redis": "localhost:6379"
   }
 }
 ```
@@ -422,10 +397,8 @@ All other pages require authentication:
 
 ```json
 {
-  "DurableTask": {
-    "TaskHubName": "DocumentIngestion",
-    "MaxConcurrentActivities": 10,
-    "MaxActiveOrchestrations": 100
+  "Workflow": {
+    "CheckpointTTLDays": 7
   }
 }
 ```
@@ -437,29 +410,56 @@ All other pages require authentication:
 ### Clean Architecture Rules
 
 1. **Core** layer has NO external dependencies
-2. **Application** depends only on Core + DTFx abstractions
+2. **Application** depends only on Core + Agent Framework abstractions
 3. **Infrastructure** implements interfaces from Core/Application
 4. **Presentation** (WebApi, Worker) coordinates everything
+
+### Agent Framework Middleware
+
+The Microsoft Agent Framework provides native middleware support:
+
+**Turn-Level Middleware (`IMiddleware`):**
+- Intercepts all incoming activities (messages, events)
+- Register via `builder.Services.AddSingleton<IMiddleware[]>([...])`
+- Implement `OnTurnAsync(ITurnContext, NextDelegate, CancellationToken)`
+
+**Callback Middleware (`CallbackMiddleware<T>`):**
+- `CallbackMiddleware<AgentInvokeCallbackContext>` - AI agent invocations (PII, guardrails)
+- `CallbackMiddleware<AgentFunctionInvocationCallbackContext>` - Tool/function calls
+- Register via `.AsBuilder().UseCallbacks(config => config.AddCallback(...))`
+
+**Built-in Middleware:**
+- `TranscriptLoggerMiddleware` - Log all conversations to files/database
+- `FileTranscriptLogger` - Default file-based transcript storage
+
+**Centralized Error Handling:**
+- Use `OnError(HandleErrorAsync)` in `AgentApplication` subclass
+- Catches all unhandled exceptions for graceful error responses
+
+**Workflow Step Instrumentation:**
+- Workflows do NOT have built-in middleware
+- Use manual OpenTelemetry instrumentation with `ActivitySource.StartActivity()`
+- Use `WorkflowInstrumentation.ExecuteStepAsync()` helper for consistent patterns
 
 ### Entity Framework Core
 
 - Each entity has a configuration file in `Infrastructure/Data/Configurations/`
 - Use `IEntityTypeConfiguration<T>` for fluent configuration
 - Migrations are in the Infrastructure project
-- Use Aspire EF Core hosting: `builder.AddSqlServerDbContext<ApplicationDbContext>("appdb")`
+- Use Aspire EF Core hosting: `builder.AddNpgsqlDbContext<ApplicationDbContext>("appdb")`
 
 ### Authentication
 
 - WebApi handles all OAuth flows
-- Clients store auth state via `AuthenticationStateProvider`
-- Use `[Authorize]` attribute for protected pages/endpoints
-- Home page is always anonymous
+- React frontend uses auth context provider
+- Use `[Authorize]` attribute for protected endpoints
+- AG-UI endpoint requires authentication
 
 ### Testing
 
-- Unit tests for validators, activities, orchestrations
-- Integration tests with SQL Server (containerized)
-- Use `LocalOrchestrationService` for in-memory DTFx testing
+- Unit tests for validators, activities, workflows
+- Integration tests with PostgreSQL + Redis (containerized)
+- Use in-memory storage for workflow logic testing
 
 ---
 
@@ -484,6 +484,17 @@ dotnet test
 
 # Lint OpenAPI document
 spectral lint MyApp.Server.WebApi/MyApp.Server.WebApi.json
+
+# Frontend development
+cd ui
+npm install
+npm run dev
+
+# Build mobile apps
+npm run build
+npx cap sync
+npx cap open android
+npx cap open ios
 ```
 
 ---
@@ -495,8 +506,11 @@ spectral lint MyApp.Server.WebApi/MyApp.Server.WebApi.json
 | OAuth redirect fails | Verify redirect URIs in provider console match `https://localhost:xxxx/api/auth/callback` |
 | User not authenticated | Check cookie settings, ensure HTTPS, verify auth middleware order |
 | EF migrations fail | Ensure connection string is correct, database exists, and correct startup project |
-| Worker not processing | Check SQL Server connection, TaskHubName consistency, and worker replicas |
-| Orchestration stuck | Avoid non-deterministic code (DateTime.Now, Guid.NewGuid, random) in orchestrations |
+| Worker not processing | Check Redis connection and worker logs |
+| Workflow checkpoint missing | Check Redis connection and key TTL settings |
+| AG-UI connection fails | Check CORS settings and authentication token |
+| CopilotKit not connecting | Verify `runtimeUrl` and authentication headers |
+| Mobile OAuth fails | Check deep link configuration in AndroidManifest.xml / Info.plist |
 
 ---
 
@@ -504,15 +518,20 @@ spectral lint MyApp.Server.WebApi/MyApp.Server.WebApi.json
 
 | Purpose | Path |
 |---------|------|
-| Orchestrations | `MyApp.Server.Application/Workflows/` |
+| Workflows | `MyApp.Server.Application/Workflows/` |
 | Activities | `MyApp.Server.Infrastructure/Activities/` |
+| Agent Middleware | `MyApp.Server.Infrastructure/Middleware/` |
+| Workflow Instrumentation | `MyApp.Server.Infrastructure/Telemetry/WorkflowInstrumentation.cs` |
+| Redis Storage | `MyApp.Server.Infrastructure/Storage/RedisCheckpointStorage.cs` |
 | DbContext | `MyApp.Server.Infrastructure/Data/ApplicationDbContext.cs` |
 | Entity Configs | `MyApp.Server.Infrastructure/Data/Configurations/` |
+| AG-UI Server | `MyApp.Server.WebApi/Program.cs` |
 | Auth Endpoints | `MyApp.Server.WebApi/Endpoints/AuthEndpoints.cs` |
 | Document Endpoints | `MyApp.Server.WebApi/Endpoints/DocumentEndpoints.cs` |
-| Blazor WASM | `MyApp.Client.BlazorWasmApp/` |
-| Blazor MAUI | `MyApp.Client.BlazorHybridMobileApp/` |
-| Shared Components | `MyApp.Shared/` |
+| React Frontend | `ui/` |
+| Capacitor Config | `ui/capacitor.config.ts` |
+| Mobile Platforms | `mobile/android/`, `mobile/ios/` |
+| OpenAPI Document | `MyApp.Server.WebApi/MyApp.Server.WebApi.json` |
 
 ---
 
@@ -522,9 +541,9 @@ spectral lint MyApp.Server.WebApi/MyApp.Server.WebApi.json
 
 | Package | Purpose |
 |---------|---------|
-| `Aspire.Hosting.SqlServer` | SQL Server container hosting |
-| `Aspire.Microsoft.EntityFrameworkCore.SqlServer` | EF Core client integration |
-| `Microsoft.Extensions.ServiceDiscovery` | Service discovery for Aspire |
+| `Aspire.Hosting.PostgreSQL` | PostgreSQL container hosting |
+| `Aspire.Hosting.Redis` | Redis container hosting |
+| `Aspire.Hosting.JavaScript` | Vite/React frontend hosting |
 
 ### Aspire Dashboard
 
