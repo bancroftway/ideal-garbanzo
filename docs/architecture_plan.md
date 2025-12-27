@@ -18,14 +18,15 @@
 7. [Worker Strategy](#7-worker-strategy)
 8. [Sample Workflow: Document Ingestion](#8-sample-workflow-document-ingestion)
 9. [Cross-Cutting Concerns](#9-cross-cutting-concerns)
-10. [AG-UI Protocol & CopilotKit Integration](#10-ag-ui-protocol--copilotkit-integration)
-11. [Frontend Authentication & Authorization](#11-frontend-authentication--authorization)
-12. [Capacitor Mobile Apps](#12-capacitor-mobile-apps)
-13. [API Design](#13-api-design)
-14. [Testing Strategy](#14-testing-strategy)
-15. [Configuration Management](#15-configuration-management)
-16. [Deployment Considerations](#16-deployment-considerations)
-17. [Future Enhancements](#17-future-enhancements)
+10. [Observability Infrastructure](#10-observability-infrastructure)
+11. [AG-UI Protocol & CopilotKit Integration](#11-ag-ui-protocol--copilotkit-integration)
+12. [Frontend Authentication & Authorization](#12-frontend-authentication--authorization)
+13. [Capacitor Mobile Apps](#13-capacitor-mobile-apps)
+14. [API Design](#14-api-design)
+15. [Testing Strategy](#15-testing-strategy)
+16. [Configuration Management](#16-configuration-management)
+17. [Deployment Considerations](#17-deployment-considerations)
+18. [Future Enhancements](#18-future-enhancements)
 
 ---
 
@@ -99,6 +100,9 @@ This document describes the architecture and implementation plan for **MyApp**, 
 | **.NET Aspire** | 13.1.0 | Application orchestration and observability |
 | **PostgreSQL** | 16+ | Application database |
 | **Redis** | 7+ | Workflow checkpoint storage and caching |
+| **Grafana** | 11.x | Unified dashboards for logs and metrics |
+| **Loki** | 3.x | Log aggregation with OTLP ingestion |
+| **Prometheus** | 3.x | Metrics storage and querying |
 
 ### 3.2 NuGet Packages
 
@@ -125,6 +129,7 @@ This document describes the architecture and implementation plan for **MyApp**, 
 |---------|---------|---------|
 | `OpenTelemetry.Extensions.Hosting` | 1.10.0 | Hosting integration |
 | `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.10.0 | OTLP exporter |
+| `OpenTelemetry.Exporter.Prometheus.AspNetCore` | 1.10.0 | Prometheus metrics endpoint |
 | `OpenTelemetry.Instrumentation.AspNetCore` | 1.10.1 | ASP.NET Core instrumentation |
 | `OpenTelemetry.Instrumentation.Http` | 1.10.0 | HTTP client instrumentation |
 | `OpenTelemetry.Instrumentation.StackExchangeRedis` | 1.10.0 | Redis instrumentation |
@@ -621,6 +626,27 @@ var postgres = builder.AddPostgres("postgres")
 // Redis for workflow checkpoints
 var redis = builder.AddRedis("redis");
 
+// Observability Stack (raw containers - no Aspire hosting packages yet)
+var loki = builder.AddContainer("loki", "grafana/loki", "3.4.3")
+    .WithBindMount("./config/loki.yaml", "/etc/loki/local-config.yaml", isReadOnly: true)
+    .WithHttpEndpoint(port: 3100, targetPort: 3100, name: "http")
+    .WithHttpEndpoint(port: 4317, targetPort: 4317, name: "otlp-grpc")
+    .WithHttpEndpoint(port: 4318, targetPort: 4318, name: "otlp-http");
+
+var prometheus = builder.AddContainer("prometheus", "prom/prometheus", "v3.2.1")
+    .WithBindMount("./config/prometheus.yaml", "/etc/prometheus/prometheus.yml", isReadOnly: true)
+    .WithHttpEndpoint(port: 9090, targetPort: 9090, name: "http");
+
+var grafana = builder.AddContainer("grafana", "grafana/grafana", "11.6.0")
+    .WithBindMount("./config/grafana/datasources.yaml", "/etc/grafana/provisioning/datasources/datasources.yaml", isReadOnly: true)
+    .WithHttpEndpoint(port: 3001, targetPort: 3000, name: "http")
+    .WithEnvironment("GF_AUTH_ANONYMOUS_ENABLED", "true")
+    .WithEnvironment("GF_AUTH_ANONYMOUS_ORG_ROLE", "Admin")
+    .WithReference(loki)
+    .WithReference(prometheus)
+    .WaitFor(loki)
+    .WaitFor(prometheus);
+
 // Single worker (no replicas in Phase 1)
 var worker = builder.AddProject<Projects.MyApp_Server_Worker>("worker")
     .WithReference(postgres)
@@ -633,8 +659,10 @@ var webapi = builder.AddProject<Projects.MyApp_Server_WebApi>("webapi")
     .WithReference(postgres)
     .WithReference(redis)
     .WithReference(worker)
+    .WithEnvironment("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", loki.GetEndpoint("otlp-http"))
     .WaitFor(postgres)
-    .WaitFor(redis);
+    .WaitFor(redis)
+    .WaitFor(loki);
 
 // React + CopilotKit frontend
 builder.AddViteApp("frontend", "../ui")
@@ -1503,13 +1531,302 @@ dotnet ef database update --project MyApp.Server.Infrastructure --startup-projec
 
 ---
 
-## 10. AG-UI Protocol & CopilotKit Integration
+## 10. Observability Infrastructure
 
-### 10.1 What is AG-UI?
+This section describes the unified observability stack for logs, metrics, and dashboards using Grafana, Loki, and Prometheus.
+
+### 10.1 Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Observability Stack                              │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                     Grafana (Port 3001)                         │   │
+│  │  - Unified dashboards                                           │   │
+│  │  - Loki data source (logs)                                      │   │
+│  │  - Prometheus data source (metrics)                             │   │
+│  └────────────────────────┬────────────────────────────────────────┘   │
+│                           │                                             │
+│           ┌───────────────┴───────────────┐                             │
+│           │                               │                             │
+│           ▼                               ▼                             │
+│  ┌─────────────────────┐        ┌─────────────────────┐                │
+│  │   Loki (Port 3100)  │        │ Prometheus (Port 9090)│               │
+│  │                     │        │                       │               │
+│  │ - OTLP ingestion    │        │ - Scrape /metrics     │               │
+│  │ - Log aggregation   │        │ - Time-series DB      │               │
+│  │ - 14-day retention  │        │ - 15-day retention    │               │
+│  └──────────┬──────────┘        └───────────┬───────────┘               │
+│             │                               │                           │
+│             │ OTLP/HTTP                     │ HTTP Scrape               │
+│             │                               │                           │
+│  ┌──────────┴───────────────────────────────┴──────────┐               │
+│  │              .NET Applications                       │               │
+│  │                                                      │               │
+│  │  WebApi          Worker                              │               │
+│  │  - /metrics      - /metrics                          │               │
+│  │  - OTLP logs     - OTLP logs                         │               │
+│  └──────────────────────────────────────────────────────┘               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 Loki Configuration
+
+Loki 3.x includes native OTLP ingestion support, eliminating the need for Promtail for .NET applications.
+
+**config/loki.yaml:**
+```yaml
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /tmp/loki
+  storage:
+    filesystem:
+      chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+# OTLP ingestion configuration
+limits_config:
+  allow_structured_metadata: true
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.name
+            - service.namespace
+            - deployment.environment
+    scope_attributes:
+      - action: drop
+        attributes:
+          - telemetry.sdk.*
+    log_attributes:
+      - action: structured_metadata
+        attributes:
+          - http.request.method
+          - http.response.status_code
+          - url.path
+          - user_agent.original
+
+# Retention configuration (14 days default)
+compactor:
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+
+limits_config:
+  retention_period: 336h  # 14 days
+  max_query_lookback: 336h
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+```
+
+### 10.3 Prometheus Configuration
+
+Prometheus scrapes `/metrics` endpoints from .NET applications.
+
+**config/prometheus.yaml:**
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'webapi'
+    static_configs:
+      - targets: ['webapi:8080']
+    metrics_path: /metrics
+    scheme: http
+
+  - job_name: 'worker'
+    static_configs:
+      - targets: ['worker:8080']
+    metrics_path: /metrics
+    scheme: http
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Retention configuration (15 days default via command line)
+# Start Prometheus with: --storage.tsdb.retention.time=15d
+```
+
+### 10.4 Grafana Configuration
+
+Grafana is pre-configured with Loki and Prometheus as data sources.
+
+**config/grafana/datasources.yaml:**
+```yaml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: "3.2.1"
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: Prometheus
+          matcherRegex: "trace_id=(\\w+)"
+          name: TraceID
+          url: "$${__value.raw}"
+```
+
+### 10.5 .NET Application Configuration
+
+#### Prometheus Metrics Endpoint
+
+Enable the Prometheus exporter in .NET applications:
+
+```csharp
+// ServiceDefaults/Extensions.cs
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddMeter("MyApp.Workflows")
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddPrometheusExporter();  // Exposes /metrics endpoint
+    });
+
+// Program.cs - Map the metrics endpoint
+app.MapPrometheusScrapingEndpoint();  // Exposes GET /metrics
+```
+
+#### OTLP Logs to Loki
+
+Configure OTLP log exporter to send directly to Loki:
+
+```csharp
+// ServiceDefaults/Extensions.cs
+builder.Logging.AddOpenTelemetry(logging =>
+{
+    logging.IncludeFormattedMessage = true;
+    logging.IncludeScopes = true;
+    
+    // OTLP exporter sends to Loki's OTLP endpoint
+    // Configured via OTEL_EXPORTER_OTLP_LOGS_ENDPOINT environment variable
+    logging.AddOtlpExporter();
+});
+```
+
+The `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` environment variable is set in the Aspire AppHost configuration to point to Loki's OTLP HTTP endpoint.
+
+### 10.6 OTLP Log Fields
+
+.NET applications using OpenTelemetry emit structured logs with the following fields automatically:
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `service.name` | Resource | Application name from Aspire |
+| `service.namespace` | Resource | Namespace (if configured) |
+| `deployment.environment` | Resource | Environment name |
+| `http.request.method` | Span | HTTP method (GET, POST, etc.) |
+| `http.response.status_code` | Span | Response status code |
+| `url.path` | Span | Request URL path |
+| `user_agent.original` | Span | Client user agent |
+| `trace_id` | Context | Distributed trace ID |
+| `span_id` | Context | Current span ID |
+| `exception.type` | Event | Exception type name |
+| `exception.message` | Event | Exception message |
+| `exception.stacktrace` | Event | Stack trace |
+
+### 10.7 Retention Configuration
+
+| Component | Default Retention | Configuration |
+|-----------|-------------------|---------------|
+| **Loki** | 14 days (336h) | `limits_config.retention_period` in loki.yaml |
+| **Prometheus** | 15 days | `--storage.tsdb.retention.time=15d` command line arg |
+| **Grafana** | N/A (dashboards) | Dashboards are configuration, not time-series data |
+
+### 10.8 Accessing the Observability Stack
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| **Grafana** | http://localhost:3001 | Dashboards and visualization |
+| **Loki** | http://localhost:3100 | Log queries (via Grafana) |
+| **Prometheus** | http://localhost:9090 | Metric queries and targets |
+
+### 10.9 Phase 2: Promtail for Container Logs
+
+For non-.NET container logs (PostgreSQL, Redis, nginx), Promtail will be added in Phase 2:
+
+```yaml
+# Future: config/promtail.yaml
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+```
+
+**Note:** Promtail is not needed for .NET applications in Phase 1 because they send logs directly to Loki via OTLP. Promtail will be added when container log collection for infrastructure services is required.
+
+---
+
+## 11. AG-UI Protocol & CopilotKit Integration
+
+### 11.1 What is AG-UI?
 
 The **AG-UI (Agent User Interaction) Protocol** is a standardized communication protocol between AI agents and user interfaces. It uses Server-Sent Events (SSE) for real-time streaming of AI responses.
 
-### 10.2 AG-UI Server Setup
+### 11.2 AG-UI Server Setup
 
 **WebApi Configuration:**
 ```csharp
@@ -1535,7 +1852,7 @@ ChatClientAgent agent = chatClient.CreateAIAgent(
 app.MapAGUI("/api/agent", agent);
 ```
 
-### 10.3 AG-UI Protocol Features
+### 11.3 AG-UI Protocol Features
 
 | Feature | Description |
 |---------|-------------|
@@ -1546,7 +1863,7 @@ app.MapAGUI("/api/agent", agent);
 | **Shared State** | Bidirectional state synchronization |
 | **Generative UI** | Dynamic UI component rendering |
 
-### 10.4 CopilotKit React Integration
+### 11.4 CopilotKit React Integration
 
 #### Installation
 
@@ -1619,7 +1936,7 @@ function DocumentViewer() {
 }
 ```
 
-### 10.5 Backend Tools (Server-Side Actions)
+### 11.5 Backend Tools (Server-Side Actions)
 
 ```csharp
 // DocumentService.cs
@@ -1641,7 +1958,7 @@ public class DocumentService
 }
 ```
 
-### 10.6 Human-in-the-Loop
+### 11.6 Human-in-the-Loop
 
 ```csharp
 // Backend tool requiring confirmation
@@ -1658,9 +1975,9 @@ public async Task<DeleteResult> DeleteDocumentAsync(
 
 ---
 
-## 11. Frontend Authentication & Authorization
+## 12. Frontend Authentication & Authorization
 
-### 11.1 Authentication Architecture
+### 12.1 Authentication Architecture
 
 **CRITICAL:** All frontend applications (web and mobile) MUST enforce authentication. The AG-UI endpoint and all protected API endpoints require valid authentication tokens.
 
@@ -1690,7 +2007,7 @@ public async Task<DeleteResult> DeleteDocumentAsync(
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.2 WebApi Authentication Configuration
+### 12.2 WebApi Authentication Configuration
 
 ```csharp
 // Program.cs
@@ -1732,7 +2049,7 @@ builder.Services.AddAuthorization();
 app.MapAGUI("/api/agent", agent).RequireAuthorization();
 ```
 
-### 11.3 React Authentication Implementation
+### 12.3 React Authentication Implementation
 
 #### Auth Context
 
@@ -1857,7 +2174,7 @@ export default function App() {
 }
 ```
 
-### 11.4 Authentication Endpoints
+### 12.4 Authentication Endpoints
 
 | Endpoint | Method | Auth Required | Purpose |
 |----------|--------|---------------|---------|
@@ -1868,7 +2185,7 @@ export default function App() {
 | `/api/agent` | POST | **Yes** | AG-UI streaming endpoint |
 | `/api/documents/*` | ALL | **Yes** | Document management |
 
-### 11.5 Security Best Practices
+### 12.5 Security Best Practices
 
 | Practice | Implementation |
 |----------|----------------|
@@ -1895,13 +2212,13 @@ builder.Services.AddCors(options =>
 
 ---
 
-## 12. Capacitor Mobile Apps
+## 13. Capacitor Mobile Apps
 
-### 12.1 Overview
+### 13.1 Overview
 
 **Capacitor** enables building native iOS and Android apps using the same React + CopilotKit codebase. The mobile apps share the web frontend code while gaining access to native device features.
 
-### 12.2 Project Setup
+### 13.2 Project Setup
 
 ```bash
 # Initialize Capacitor in the ui project
@@ -1918,7 +2235,7 @@ npx cap add ios
 npm install @capacitor/browser  # For OAuth flows
 ```
 
-### 12.3 Capacitor Configuration
+### 13.3 Capacitor Configuration
 
 **capacitor.config.ts:**
 ```typescript
@@ -1947,7 +2264,7 @@ const config: CapacitorConfig = {
 export default config;
 ```
 
-### 12.4 Mobile Authentication
+### 13.4 Mobile Authentication
 
 Mobile apps use in-app browser for OAuth flows:
 
@@ -1989,7 +2306,7 @@ export function useMobileAuth() {
 }
 ```
 
-### 12.5 Deep Link Configuration
+### 13.5 Deep Link Configuration
 
 **Android (android/app/src/main/AndroidManifest.xml):**
 ```xml
@@ -2014,7 +2331,7 @@ export function useMobileAuth() {
 </array>
 ```
 
-### 12.6 Build and Deploy
+### 13.6 Build and Deploy
 
 ```bash
 # Build the React app
@@ -2032,7 +2349,7 @@ npx cap run android --livereload --external
 npx cap run ios --livereload --external
 ```
 
-### 12.7 Mobile-Specific Considerations
+### 13.7 Mobile-Specific Considerations
 
 | Consideration | Solution |
 |---------------|----------|
@@ -2044,9 +2361,9 @@ npx cap run ios --livereload --external
 
 ---
 
-## 13. API Design
+## 14. API Design
 
-### 13.1 Endpoints
+### 14.1 Endpoints
 
 #### POST /api/documents/ingest
 
@@ -2162,7 +2479,7 @@ optional-client-id-12345
 }
 ```
 
-### 13.2 Validation
+### 14.2 Validation
 
 Using **FluentValidation** with auto-validation via endpoint group filter:
 
@@ -2214,7 +2531,7 @@ group.MapPost("/ingest", IngestDocumentAsync)
     .Produces<IngestDocumentApiResponse>(StatusCodes.Status202Accepted);
 ```
 
-### 13.3 API Documentation
+### 14.3 API Documentation
 
 #### OpenAPI 3.1 Support
 
@@ -2274,9 +2591,9 @@ spectral lint src/MyApp.Server.WebApi/MyApp.Server.WebApi.json
 
 ---
 
-## 14. Testing Strategy
+## 15. Testing Strategy
 
-### 14.1 Test Categories
+### 15.1 Test Categories
 
 | Category | Scope | Framework | Database |
 |----------|-------|-----------|----------|
@@ -2284,7 +2601,7 @@ spectral lint src/MyApp.Server.WebApi/MyApp.Server.WebApi.json
 | **Integration Tests** | Workflow execution | xUnit | PostgreSQL + Redis (containerized) |
 | **Emulator Tests** | Workflow logic | In-memory storage | In-memory |
 
-### 14.2 Unit Test Examples
+### 15.2 Unit Test Examples
 
 #### Validator Tests
 
@@ -2317,7 +2634,7 @@ public void RecordInput_ShouldAddEventWithCorrectTags()
 }
 ```
 
-### 14.3 Integration Tests (Future)
+### 15.3 Integration Tests (Future)
 
 For comprehensive testing with real PostgreSQL and Redis:
 
@@ -2363,9 +2680,9 @@ public class IntegrationTests : IAsyncLifetime
 
 ---
 
-## 15. Configuration Management
+## 16. Configuration Management
 
-### 15.1 Environment-Specific Configuration
+### 16.1 Environment-Specific Configuration
 
 ```json
 // appsettings.Development.json
@@ -2389,7 +2706,7 @@ public class IntegrationTests : IAsyncLifetime
 }
 ```
 
-### 15.2 Connection Strings
+### 16.2 Connection Strings
 
 **Development (via Aspire):**
 ```json
@@ -2411,7 +2728,7 @@ public class IntegrationTests : IAsyncLifetime
 }
 ```
 
-### 15.3 Authentication Configuration
+### 16.3 Authentication Configuration
 
 ```json
 {
@@ -2440,9 +2757,9 @@ public class IntegrationTests : IAsyncLifetime
 
 ---
 
-## 16. Deployment Considerations
+## 17. Deployment Considerations
 
-### 16.1 Development (Aspire)
+### 17.1 Development (Aspire)
 
 ```bash
 # Start all services
@@ -2451,7 +2768,7 @@ dotnet run --project MyApp.AppHost
 # Dashboard available at https://localhost:15888
 ```
 
-### 16.2 Docker Compose
+### 17.2 Docker Compose
 
 ```yaml
 version: '3.8'
@@ -2473,6 +2790,41 @@ services:
     volumes:
       - redis-data:/data
 
+  loki:
+    image: grafana/loki:3.4.3
+    ports:
+      - "3100:3100"
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./config/loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/tmp/loki
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./config/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - prometheus
+
   webapi:
     image: myapp-webapi:latest
     environment:
@@ -2480,20 +2832,24 @@ services:
       ConnectionStrings__redis: redis:6379
       Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID}
       Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET}
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://loki:4318
     ports:
       - "8080:8080"
     depends_on:
       - postgres
       - redis
+      - loki
 
   worker:
     image: myapp-worker:latest
     environment:
       ConnectionStrings__appdb: Host=postgres;Database=appdb;...
       ConnectionStrings__redis: redis:6379
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://loki:4318
     depends_on:
       - postgres
       - redis
+      - loki
 
   frontend:
     image: myapp-frontend:latest
@@ -2505,9 +2861,12 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:
 ```
 
-### 16.3 Kubernetes
+### 17.3 Kubernetes
 
 ```yaml
 apiVersion: apps/v1
@@ -2549,9 +2908,9 @@ spec:
 
 ---
 
-## 17. Future Enhancements
+## 18. Future Enhancements
 
-### 17.1 Phase 2: Production Hardening
+### 18.1 Phase 2: Production Hardening
 
 | Item | Description | Priority |
 |------|-------------|----------|
@@ -2560,7 +2919,7 @@ spec:
 | **Dead Letter Queue** | Handle poison messages | High |
 | **Workflow Versioning** | Support side-by-side workflow versions | Medium |
 
-### 17.2 Phase 3: Advanced Features
+### 18.2 Phase 3: Advanced Features
 
 | Item | Description | Priority |
 |------|-------------|----------|
@@ -2569,12 +2928,13 @@ spec:
 | **Sub-Workflows** | Break large workflows into child workflows | Low |
 | **Saga Pattern** | Compensating transactions for failures | Low |
 
-### 17.3 Phase 4: Operations
+### 18.3 Phase 4: Operations
 
 | Item | Description | Priority |
 |------|-------------|----------|
-| **Grafana Dashboards** | Pre-built observability dashboards | High |
-| **Alerting** | Prometheus alerts for workflow failures | High |
+| **Promtail Integration** | Add Promtail for non-.NET container logs (PostgreSQL, Redis) | High |
+| **Grafana Dashboards** | Pre-built dashboards for workflows, agents, and infrastructure | High |
+| **Alerting Rules** | Prometheus alerting for workflow failures, error rates | High |
 | **Admin API** | Workflow management endpoints | Medium |
 | **Purging** | Automatic cleanup of completed workflow checkpoints | Medium |
 
@@ -2654,6 +3014,9 @@ npx cap open ios
 | Mobile Platforms | `src/mobile/android/`, `src/mobile/ios/` |
 | OpenAPI Document | `src/MyApp.Server.WebApi/MyApp.Server.WebApi.json` |
 | Spectral Config | `src/MyApp.Server.WebApi/.spectral.yml` |
+| Loki Config | `src/MyApp.AppHost/config/loki.yaml` |
+| Prometheus Config | `src/MyApp.AppHost/config/prometheus.yaml` |
+| Grafana Datasources | `src/MyApp.AppHost/config/grafana/datasources.yaml` |
 
 ### B.3 Troubleshooting
 
@@ -2669,6 +3032,9 @@ npx cap open ios
 | CopilotKit not connecting | Verify `runtimeUrl` and authentication headers |
 | Mobile OAuth fails | Check deep link configuration in AndroidManifest.xml / Info.plist |
 | Capacitor sync fails | Run `npm run build` before `npx cap sync` |
+| Logs not appearing in Loki | Check OTEL_EXPORTER_OTLP_LOGS_ENDPOINT env var and Loki container status |
+| Metrics not in Prometheus | Verify /metrics endpoint is accessible and Prometheus scrape config |
+| Grafana shows no data | Check datasource configuration and verify Loki/Prometheus are running |
 
 ---
 

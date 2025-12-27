@@ -33,6 +33,9 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │  - WebApi (with authentication + AG-UI server)                              │
 │  - Worker (single instance - Phase 1)                                       │
 │  - React Frontend (Vite development server)                                 │
+│  - Grafana (dashboards - port 3001)                                         │
+│  - Loki (log aggregation with OTLP - port 3100)                             │
+│  - Prometheus (metrics storage - port 9090)                                 │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
               ┌───────────────┼───────────────┐
@@ -282,6 +285,9 @@ MyApp.slnx
 | **.NET Aspire** | Application orchestration |
 | **FluentValidation** | Input validation |
 | **OpenTelemetry** | Observability |
+| **Grafana** | Unified dashboards for logs and metrics |
+| **Loki** | Log aggregation with OTLP ingestion |
+| **Prometheus** | Metrics storage and querying |
 
 ### Frontend Stack
 
@@ -511,6 +517,9 @@ npx cap open ios
 | AG-UI connection fails | Check CORS settings and authentication token |
 | CopilotKit not connecting | Verify `runtimeUrl` and authentication headers |
 | Mobile OAuth fails | Check deep link configuration in AndroidManifest.xml / Info.plist |
+| Logs not appearing in Loki | Check OTEL_EXPORTER_OTLP_LOGS_ENDPOINT env var and Loki container status |
+| Metrics not in Prometheus | Verify /metrics endpoint is accessible and Prometheus scrape config |
+| Grafana shows no data | Check datasource configuration and verify Loki/Prometheus are running |
 
 ---
 
@@ -532,6 +541,9 @@ npx cap open ios
 | Capacitor Config | `ui/capacitor.config.ts` |
 | Mobile Platforms | `mobile/android/`, `mobile/ios/` |
 | OpenAPI Document | `MyApp.Server.WebApi/MyApp.Server.WebApi.json` |
+| Loki Config | `MyApp.AppHost/config/loki.yaml` |
+| Prometheus Config | `MyApp.AppHost/config/prometheus.yaml` |
+| Grafana Datasources | `MyApp.AppHost/config/grafana/datasources.yaml` |
 
 ---
 
