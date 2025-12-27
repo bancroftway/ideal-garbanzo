@@ -1,8 +1,8 @@
 # MyApp Architecture Plan
 
-> **Document Version:** 2.0  
+> **Document Version:** 2.2  
 > **Created:** December 15, 2025  
-> **Last Updated:** December 26, 2025  
+> **Last Updated:** December 27, 2025  
 > **Status:** Architecture Redesign
 
 ---
@@ -15,8 +15,8 @@
 4. [Solution Structure](#4-solution-structure)
 5. [Architecture Overview](#5-architecture-overview)
 6. [Microsoft Agent Framework Workflows](#6-microsoft-agent-framework-workflows)
-7. [Worker Strategy](#7-worker-strategy)
-8. [Sample Workflow: Document Ingestion](#8-sample-workflow-document-ingestion)
+7. [Agentic Workflow Architecture](#7-agentic-workflow-architecture)
+8. [Sample Application: Home Inspection](#8-sample-application-home-inspection)
 9. [Cross-Cutting Concerns](#9-cross-cutting-concerns)
 10. [Observability Infrastructure](#10-observability-infrastructure)
 11. [AG-UI Protocol & CopilotKit Integration](#11-ag-ui-protocol--copilotkit-integration)
@@ -27,6 +27,7 @@
 16. [Configuration Management](#16-configuration-management)
 17. [Deployment Considerations](#17-deployment-considerations)
 18. [Future Enhancements](#18-future-enhancements)
+19. [Appendix C: API Verification Status](#appendix-c-api-verification-status)
 
 ---
 
@@ -34,16 +35,26 @@
 
 ### 1.1 Purpose
 
-This document describes the architecture and implementation plan for **MyApp**, a self-hosted AI-powered workflow orchestration solution built using the **Microsoft Agent Framework Workflows** with Redis checkpoint persistence. The solution features a React frontend powered by **CopilotKit** for conversational AI interactions, communicating with the backend via the **AG-UI protocol** (Server-Sent Events streaming).
+This document describes the architecture and implementation plan for **MyApp**, an **Agentic-First** self-hosted AI-powered application built using the **Microsoft Agent Framework Workflows** with Redis checkpoint persistence. 
+
+**Agentic-First Architecture** means:
+- **Every UI interaction** flows through the AG-UI protocol - including form filling, data entry, and navigation
+- **Every backend operation** is an Agentic workflow with human-in-the-loop collaboration
+- **Voice and text input** are first-class citizens for user interaction
+- **Shared state** between frontend and agents enables real-time collaborative experiences
+
+The solution features a React frontend powered by **CopilotKit** for conversational AI interactions (with voice support), communicating with the backend via the **AG-UI protocol** (Server-Sent Events streaming).
 
 ### 1.2 Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
+| **Architecture Philosophy** | Agentic-First | All interactions through AI agents, human-agent collaboration |
 | **Orchestration Framework** | Microsoft Agent Framework Workflows | AI-native workflows, superstep checkpointing, long-running agent support |
 | **Application Database** | PostgreSQL | Open-source, robust, excellent JSON support, self-hosted |
-| **Workflow State Persistence** | Redis | Fast checkpoint storage, pub/sub for real-time updates, future scaling via Streams |
+| **Workflow State Persistence** | Redis | Fast checkpoint storage, pub/sub for real-time updates, agent thread persistence |
 | **Client-Server Protocol** | AG-UI (SSE) | Real-time streaming, human-in-the-loop, shared state, backend/frontend tools |
+| **Voice Input** | Web Speech API + CopilotKit | Native browser speech recognition, seamless voice-to-text |
 | **Web Frontend** | React + CopilotKit v1.50 + Vite | Pre-built AI chat components, generative UI, excellent DX |
 | **Mobile Apps** | Capacitor | Share React codebase, native iOS/Android access, single codebase |
 | **Hosting Platform** | .NET Aspire | Simplified orchestration, built-in observability, container management |
@@ -59,6 +70,8 @@ This document describes the architecture and implementation plan for **MyApp**, 
 - **.NET 10** - Using the latest .NET runtime with preview language features
 - **Zero build warnings** - All code must compile without warnings
 - **Frontend must be authenticated** - All client apps (web and mobile) must enforce authentication and authorization
+- **Agentic-First** - All user interactions must flow through AG-UI protocol, no direct REST API calls from UI for data operations
+- **Minimal APIs only** - Presentation layer uses minimal APIs (no MVC/controllers)
 
 ---
 
@@ -66,11 +79,14 @@ This document describes the architecture and implementation plan for **MyApp**, 
 
 ### 2.1 Primary Goals
 
-1. **AI-Native Workflow Orchestration** - Leverage Microsoft Agent Framework for building intelligent, long-running AI workflows
-2. **Real-Time User Experience** - Stream AI responses to users via AG-UI protocol with CopilotKit components
-3. **Cross-Platform Clients** - Single React codebase for web (Vite) and mobile (Capacitor) applications
-4. **Self-Hosted Solution** - Create a solution that can run entirely on-premises or in any cloud
-5. **Production-Ready Patterns** - Implement patterns suitable for production use
+1. **Agentic-First Architecture** - Every user interaction flows through AI agents; forms, data entry, and navigation are all agent-mediated
+2. **Human-Agent Collaboration** - Enable seamless collaboration between users and AI agents with real-time shared state
+3. **Voice-Enabled Interaction** - Support voice input alongside text for natural conversational experiences
+4. **AI-Native Workflow Orchestration** - Leverage Microsoft Agent Framework for building intelligent, long-running AI workflows
+5. **Real-Time User Experience** - Stream AI responses to users via AG-UI protocol with CopilotKit components
+6. **Cross-Platform Clients** - Single React codebase for web (Vite) and mobile (Capacitor) applications
+7. **Self-Hosted Solution** - Create a solution that can run entirely on-premises or in any cloud
+8. **Session Persistence** - Save and resume agent conversations and workflow state across sessions
 
 ### 2.2 Secondary Goals
 
@@ -78,14 +94,14 @@ This document describes the architecture and implementation plan for **MyApp**, 
 2. **Clean Architecture** - Demonstrate proper layering and separation of concerns
 3. **Robust Validation** - Strong input validation at API boundaries
 4. **Checkpoint Recovery** - Support workflow resumption after failures via Redis persistence
-5. **Human-in-the-Loop** - Enable user interaction during workflow execution
+5. **Specialized Agent Orchestration** - Coordinate multiple specialized agents for complex tasks
 
 ### 2.3 Non-Goals
 
 - Integration with Azure Functions runtime
 - Azure Storage or Service Bus backends
 - Multi-tenancy support (deferred to future phases)
-- Distributed worker scaling (Phase 2 - Redis Streams)
+- Separate background worker process (workflows execute inline with AG-UI requests)
 
 ---
 
@@ -110,45 +126,45 @@ This document describes the architecture and implementation plan for **MyApp**, 
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `Microsoft.Agents.AI.Workflows` | 1.0.0-preview.* | Workflow orchestration with superstep checkpointing |
-| `Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` | 1.0.0-preview.* | AG-UI protocol server (SSE streaming) |
-| `Microsoft.Extensions.AI` | 9.1.0 | AI abstractions and chat client interfaces |
-| `Microsoft.Extensions.AI.OpenAI` | 9.1.0 | OpenAI/Azure OpenAI integration |
+| `Microsoft.Agents.AI.Workflows` | latest 1.0.0-preview.* | Workflow orchestration with superstep checkpointing |
+| `Microsoft.Agents.AI.Hosting.AGUI.AspNetCore` | latest 1.0.0-preview.* | AG-UI protocol server (SSE streaming) |
+| `Microsoft.Extensions.AI` | 10.1.1 | AI abstractions and chat client interfaces |
+| `Microsoft.Extensions.AI.OpenAI` | 10.1.1-preview.1.25612.2 | OpenAI/Azure OpenAI integration |
 
 #### Validation
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `FluentValidation` | 11.11.0 | Fluent validation rules |
-| `FluentValidation.DependencyInjectionExtensions` | 11.11.0 | DI integration |
+| `FluentValidation` | 12.1.1 | Fluent validation rules |
+| `FluentValidation.DependencyInjectionExtensions` | 12.1.1 | DI integration |
 | `SharpGrip.FluentValidation.AutoValidation.Endpoints` | 1.5.0 | Auto-validation for minimal APIs |
 
 #### Observability
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `OpenTelemetry.Extensions.Hosting` | 1.10.0 | Hosting integration |
-| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.10.0 | OTLP exporter |
-| `OpenTelemetry.Exporter.Prometheus.AspNetCore` | 1.10.0 | Prometheus metrics endpoint |
-| `OpenTelemetry.Instrumentation.AspNetCore` | 1.10.1 | ASP.NET Core instrumentation |
-| `OpenTelemetry.Instrumentation.Http` | 1.10.0 | HTTP client instrumentation |
-| `OpenTelemetry.Instrumentation.StackExchangeRedis` | 1.10.0 | Redis instrumentation |
+| `OpenTelemetry.Extensions.Hosting` | 1.14.0 | Hosting integration |
+| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.14.0 | OTLP exporter |
+| `OpenTelemetry.Exporter.Prometheus.AspNetCore` | 1.14.0-beta.1 | Prometheus metrics endpoint |
+| `OpenTelemetry.Instrumentation.AspNetCore` | 1.14.0 | ASP.NET Core instrumentation |
+| `OpenTelemetry.Instrumentation.Http` | 1.14.0 | HTTP client instrumentation |
+| `OpenTelemetry.Instrumentation.StackExchangeRedis` | 1.14.0-beta.1 | Redis instrumentation |
 
 #### API Documentation
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `Microsoft.AspNetCore.OpenApi` | 10.0.0 | Native OpenAPI 3.1 document generation |
-| `Microsoft.Extensions.ApiDescription.Server` | 10.0.0 | Build-time OpenAPI document generation |
-| `Scalar.AspNetCore` | 2.1.9 | Modern interactive API documentation UI |
+| `Microsoft.AspNetCore.OpenApi` | 10.0.1 | Native OpenAPI 3.1 document generation |
+| `Microsoft.Extensions.ApiDescription.Server` | 10.0.1 | Build-time OpenAPI document generation |
+| `Scalar.AspNetCore` | 2.11.10 | Modern interactive API documentation UI |
 
 #### Testing
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `xunit` | 2.9.2 | Test framework |
+| `xunit` | 2.9.3 | Test framework |
 | `Moq` | 4.20.72 | Mocking framework |
-| `FluentAssertions` | 6.12.2 | Fluent assertions |
+| `FluentAssertions` | 8.8.0 | Fluent assertions |
 
 #### Authentication
 
@@ -167,7 +183,7 @@ This document describes the architecture and implementation plan for **MyApp**, 
 | `Microsoft.EntityFrameworkCore.Design` | 10.0.0 | Design-time EF Core tools |
 | `Aspire.Npgsql.EntityFrameworkCore.PostgreSQL` | 13.1.0 | Aspire EF Core hosting for PostgreSQL |
 | `Aspire.StackExchange.Redis.DistributedCaching` | 13.1.0 | Aspire Redis client integration |
-| `Microsoft.Extensions.ServiceDiscovery` | 9.1.0 | Aspire client service discovery |
+| `Microsoft.Extensions.ServiceDiscovery` | 10.1.0 | Aspire client service discovery |
 
 #### Aspire Hosting
 
@@ -190,11 +206,11 @@ This document describes the architecture and implementation plan for **MyApp**, 
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `@capacitor/core` | 6.x | Core Capacitor runtime |
-| `@capacitor/cli` | 6.x | CLI for building mobile apps |
-| `@capacitor/android` | 6.x | Android platform support |
-| `@capacitor/ios` | 6.x | iOS platform support |
-| `@capacitor/browser` | 6.x | In-app browser for OAuth flows |
+| `@capacitor/core` | 8.0.0 | Core Capacitor runtime |
+| `@capacitor/cli` | 8.0.0 | CLI for building mobile apps |
+| `@capacitor/android` | 8.0.0 | Android platform support |
+| `@capacitor/ios` | 8.0.0 | iOS platform support |
+| `@capacitor/browser` | 8.0.0 | In-app browser for OAuth flows |
 
 ### 3.4 Development Tools
 
@@ -223,8 +239,7 @@ MyApp/
 │   │   ├── MyApp.Server.Core/            # Domain layer
 │   │   ├── MyApp.Server.Application/     # Application layer
 │   │   ├── MyApp.Server.Infrastructure/  # Infrastructure layer
-│   │   ├── MyApp.Server.WebApi/          # API + AG-UI server
-│   │   ├── MyApp.Server.Worker/          # Background worker
+│   │   ├── MyApp.Server.WebApi/          # API + AG-UI server + Workflow execution
 │   │   └── MyApp.Shared/                 # Shared DTOs
 │   ├── ui/                               # React + CopilotKit frontend
 │   │   ├── src/
@@ -244,15 +259,14 @@ MyApp/
 | Project | Layer | Responsibility |
 |---------|-------|----------------|
 | **MyApp.Server.Core** | Domain | Entities, Interfaces, domain types, User entity |
-| **MyApp.Server.Application** | Application | Workflow definitions, validators, use cases |
+| **MyApp.Server.Application** | Application | Workflow definitions, validators, use cases, Agent definitions |
 | **MyApp.Server.Infrastructure** | Infrastructure | Activities, middleware, external integrations, DbContext, Redis storage |
-| **MyApp.Server.WebApi** | Presentation | HTTP endpoints, AG-UI server, authentication |
-| **MyApp.Server.Worker** | Presentation | Background worker, workflow processing |
+| **MyApp.Server.WebApi** | Presentation | HTTP endpoints, AG-UI server, authentication, inline workflow execution |
 | **MyApp.AppHost** | Orchestration | Aspire host, resource provisioning |
 | **MyApp.ServiceDefaults** | Cross-cutting | OpenTelemetry, health checks, service config |
 | **MyApp.Shared** | Shared | DTOs shared between server and clients |
 | **MyApp.Tests** | Testing | Unit tests, integration tests |
-| **ui/** | Frontend | React + CopilotKit web application |
+| **ui/** | Frontend | React + CopilotKit web application (Agentic-First UI) |
 | **mobile/** | Frontend | Capacitor iOS/Android native shells |
 
 ### 4.3 Dependency Flow
@@ -263,26 +277,25 @@ MyApp/
                     │  (Orchestrates) │
                     └────────┬────────┘
                              │
-         ┌───────────────────┼───────────────────┐
-         │                   │                   │
-         ▼                   ▼                   ▼
-  ┌───────────┐       ┌───────────┐      ┌───────────────┐
-  │  WebApi   │       │  Worker   │      │ServiceDefaults│
-  │ + AG-UI   │       │           │      └───────────────┘
-  └─────┬─────┘       └─────┬─────┘              ▲
-        │                   │                    │
-        └─────────┬─────────┘                    │
-                  │                              │
-                  ▼                              │
-       ┌─────────────────────┐                   │
-       │   Infrastructure    │───────────────────┘
+         ┌───────────────────┴───────────────────┐
+         │                                       │
+         ▼                                       ▼
+  ┌─────────────────┐                   ┌───────────────┐
+  │     WebApi      │                   │ServiceDefaults│
+  │  + AG-UI        │                   └───────────────┘
+  │  + Workflows    │                           ▲
+  └────────┬────────┘                           │
+           │                                    │
+           ▼                                    │
+       ┌─────────────────────┐                  │
+       │   Infrastructure    │──────────────────┘
        │  (Redis, Postgres)  │
        └──────────┬──────────┘
                   │
                   ▼
        ┌─────────────────────┐
        │    Application      │
-       │   (Workflows)       │
+       │ (Workflows, Agents) │
        └──────────┬──────────┘
                   │
                   ▼
@@ -351,12 +364,13 @@ Contains:
 
 **Dependencies:** Core, Application, plus external packages (Agent Framework, Redis, PostgreSQL).
 
-#### Presentation Layer (MyApp.Server.WebApi, MyApp.Server.Worker)
+#### Presentation Layer (MyApp.Server.WebApi)
 
 Contains:
 - **Endpoints** - HTTP request handlers and AG-UI server
 - **Models** - API-specific request/response models
 - **Configuration** - Application startup and DI setup
+- **Inline Workflows** - Agent orchestration and workflow execution
 
 **Dependencies:** All layers.
 
@@ -392,17 +406,17 @@ Contains:
 │  └─────────────────────────────────────────────────────────┘    │
 └────────────────────────────────┬────────────────────────────────┘
                                  │
-              ┌──────────────────┼──────────────────┐
-              │                  │                  │
-              ▼                  ▼                  ▼
-       ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-       │ PostgreSQL  │    │    Redis    │    │   Worker    │
-       │   (appdb)   │    │(checkpoints)│    │ (workflows) │
-       │             │    │             │    │             │
-       │ - Users     │    │ - State     │    │ - Executor  │
-       │ - Documents │    │ - Cache     │    │ - Activities│
-       │ - Identity  │    │ - Pub/Sub   │    │             │
-       └─────────────┘    └─────────────┘    └─────────────┘
+              ┌──────────────────┴──────────────────┐
+              │                                     │
+              ▼                                     ▼
+       ┌─────────────┐                       ┌─────────────┐
+       │ PostgreSQL  │                       │    Redis    │
+       │   (appdb)   │                       │             │
+       │             │                       │ - Checkpts  │
+       │ - Users     │                       │ - Threads   │
+       │ - Documents │                       │ - Cache     │
+       │ - Identity  │                       └─────────────┘
+       └─────────────┘
 ```
 
 ---
@@ -468,50 +482,96 @@ public class ExtractContentActivity
 // Checkpoint storage interface
 public interface IStorage
 {
-    Task<IDictionary<string, object>> ReadAsync(
-        string[] keys, 
+    Task<IDictionary<string, T?>> ReadAsync<T>(
+        IReadOnlyList<string> keys,
         CancellationToken cancellationToken);
-    
+
     Task WriteAsync<TStoreItem>(
-        IDictionary<string, TStoreItem> changes, 
+        IDictionary<string, TStoreItem> changes,
         CancellationToken cancellationToken);
-    
+
     Task DeleteAsync(
-        string[] keys, 
+        string[] keys,
         CancellationToken cancellationToken);
 }
 ```
 
 ### 6.3 Redis Checkpoint Storage
 
-**Custom implementation required** - No pre-built Redis storage exists:
+**Custom implementation required** - No pre-built Redis storage exists. The implementation below follows best practices for batch operations with proper error handling:
 
 ```csharp
 public class RedisCheckpointStorage : IStorage
 {
     private readonly IConnectionMultiplexer _redis;
+    private readonly ILogger<RedisCheckpointStorage> _logger;
     private readonly JsonSerializerOptions _jsonOptions;
     
-    // Key pattern: workflow:{workflowId}:checkpoint:{checkpointId}
-    private const string KeyPattern = "workflow:{0}:checkpoint:{1}";
+    private const string KeyPrefix = "workflow:checkpoint:";
+    private static readonly TimeSpan DefaultExpiry = TimeSpan.FromDays(7);
+
+    public RedisCheckpointStorage(
+        IConnectionMultiplexer redis,
+        ILogger<RedisCheckpointStorage> logger)
+    {
+        _redis = redis;
+        _logger = logger;
+        _jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+    }
     
-    public async Task<IDictionary<string, object>> ReadAsync(
-        string[] keys, 
+    public async Task<IDictionary<string, T?>> ReadAsync<T>(
+        IReadOnlyList<string> keys,
         CancellationToken cancellationToken)
     {
         var db = _redis.GetDatabase();
-        var result = new Dictionary<string, object>();
-        
+        var result = new Dictionary<string, T?>(StringComparer.Ordinal);
+
+        if (keys.Count == 0)
+            return result;
+
+        // Use batch for atomic read of multiple keys
+        var batch = db.CreateBatch();
+        var tasks = new Dictionary<string, Task<RedisValue>>(keys.Count);
+
         foreach (var key in keys)
         {
-            var value = await db.StringGetAsync(key);
-            if (value.HasValue)
+            var redisKey = $"{KeyPrefix}{key}";
+            tasks[key] = batch.StringGetAsync(redisKey);
+        }
+
+        batch.Execute();
+
+        // Await all tasks and collect results with error handling
+        var exceptions = new List<Exception>();
+
+        foreach (var (key, task) in tasks)
+        {
+            try
             {
-                result[key] = JsonSerializer.Deserialize<object>(
-                    value!, _jsonOptions)!;
+                var value = await task.ConfigureAwait(false);
+                if (!value.HasValue)
+                {
+                    result[key] = default;
+                    continue;
+                }
+
+                result[key] = JsonSerializer.Deserialize<T>(value!, _jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to read checkpoint key: {Key}", key);
+                exceptions.Add(ex);
             }
         }
-        
+
+        if (exceptions.Count > 0 && exceptions.Count == keys.Count)
+        {
+            throw new AggregateException("All checkpoint reads failed", exceptions);
+        }
+
         return result;
     }
     
@@ -519,26 +579,133 @@ public class RedisCheckpointStorage : IStorage
         IDictionary<string, TStoreItem> changes, 
         CancellationToken cancellationToken)
     {
+        if (changes.Count == 0)
+            return;
+
         var db = _redis.GetDatabase();
         var batch = db.CreateBatch();
+        var tasks = new List<(string Key, Task<bool> Task)>();
         
         foreach (var (key, value) in changes)
         {
+            var redisKey = $"{KeyPrefix}{key}";
             var json = JsonSerializer.Serialize(value, _jsonOptions);
-            _ = batch.StringSetAsync(key, json, TimeSpan.FromDays(7));
+            
+            var task = batch.StringSetAsync(redisKey, json, DefaultExpiry);
+            tasks.Add((key, task));
         }
         
         batch.Execute();
+        
+        // Properly await and handle each result
+        var failures = new List<string>();
+        
+        foreach (var (key, task) in tasks)
+        {
+            try
+            {
+                var success = await task;
+                if (!success)
+                {
+                    failures.Add(key);
+                    _logger.LogWarning("Failed to write checkpoint: {Key}", key);
+                }
+            }
+            catch (Exception ex)
+            {
+                failures.Add(key);
+                _logger.LogError(ex, "Exception writing checkpoint: {Key}", key);
+            }
+        }
+        
+        if (failures.Count > 0)
+        {
+            _logger.LogError(
+                "Failed to write {Count}/{Total} checkpoints: {Keys}", 
+                failures.Count, changes.Count, string.Join(", ", failures));
+            
+            if (failures.Count == changes.Count)
+            {
+                throw new InvalidOperationException(
+                    $"All checkpoint writes failed: {string.Join(", ", failures)}");
+            }
+        }
     }
     
     public async Task DeleteAsync(
         string[] keys, 
         CancellationToken cancellationToken)
     {
+        if (keys.Length == 0)
+            return;
+
         var db = _redis.GetDatabase();
-        var redisKeys = keys.Select(k => (RedisKey)k).ToArray();
-        await db.KeyDeleteAsync(redisKeys);
+        var redisKeys = keys.Select(k => (RedisKey)$"{KeyPrefix}{k}").ToArray();
+        
+        try
+        {
+            var deletedCount = await db.KeyDeleteAsync(redisKeys);
+            _logger.LogDebug(
+                "Deleted {Deleted}/{Total} checkpoint keys", 
+                deletedCount, keys.Length);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to delete checkpoint keys");
+            throw;
+        }
     }
+
+    /// <summary>
+    /// Transaction-based write for atomic operations with optimistic concurrency.
+    /// </summary>
+    public async Task WriteAtomicAsync<TStoreItem>(
+        IDictionary<string, TStoreItem> changes,
+        string? expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var db = _redis.GetDatabase();
+        var transaction = db.CreateTransaction();
+        
+        // Optimistic concurrency check via version key
+        if (!string.IsNullOrEmpty(expectedVersion))
+        {
+            var versionKey = $"{KeyPrefix}__version__";
+            transaction.AddCondition(Condition.StringEqual(versionKey, expectedVersion));
+        }
+        
+        var tasks = new List<Task<bool>>();
+        
+        foreach (var (key, value) in changes)
+        {
+            var redisKey = $"{KeyPrefix}{key}";
+            var json = JsonSerializer.Serialize(value, _jsonOptions);
+            tasks.Add(transaction.StringSetAsync(redisKey, json, DefaultExpiry));
+        }
+        
+        // Update version for next write
+        var newVersion = Guid.NewGuid().ToString("N");
+        tasks.Add(transaction.StringSetAsync($"{KeyPrefix}__version__", newVersion));
+        
+        var committed = await transaction.ExecuteAsync();
+        
+        if (!committed)
+        {
+            throw new ConcurrencyException(
+                "Checkpoint update failed due to version conflict");
+        }
+        
+        // Verify all writes succeeded
+        foreach (var task in tasks)
+        {
+            await task; // Will throw if any individual write failed
+        }
+    }
+}
+
+public class ConcurrencyException : Exception
+{
+    public ConcurrencyException(string message) : base(message) { }
 }
 ```
 
@@ -562,7 +729,74 @@ await foreach (var update in executor.ResumeStreamAsync(workflowId, checkpointId
 }
 ```
 
-### 6.5 Comparison: Agent Framework vs DTFx
+### 6.5 Superstep Checkpointing
+
+The Microsoft Agent Framework uses **Pregel-style superstep checkpointing** for workflow state persistence. Unlike event-sourcing frameworks that replay every await, superstep checkpointing saves state at defined boundaries.
+
+#### What Gets Captured
+
+At each checkpoint boundary, the following state is persisted:
+
+| State Type | Description |
+|------------|-------------|
+| **Pending Messages** | Unprocessed messages in agent queues |
+| **Shared State** | `WorkflowContext.SharedState` dictionary |
+| **Step Progress** | Current superstep number and completion status |
+| **Agent Conversations** | Active agent thread states |
+
+#### Checkpoint Hooks
+
+```csharp
+// Executor hooks for checkpoint events
+public class InspectionWorkflowExecutor : WorkflowExecutor
+{
+    protected override async Task OnCheckpointingAsync(
+        string workflowId,
+        string checkpointId,
+        IDictionary<string, object> state,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Creating checkpoint {CheckpointId} for workflow {WorkflowId}",
+            checkpointId, workflowId);
+        
+        // Custom pre-checkpoint logic (e.g., flush caches)
+        await FlushPendingUpdatesAsync(workflowId, cancellationToken);
+    }
+
+    protected override async Task OnCheckpointRestoredAsync(
+        string workflowId,
+        string checkpointId,
+        IDictionary<string, object> state,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Restored checkpoint {CheckpointId} for workflow {WorkflowId}",
+            checkpointId, workflowId);
+        
+        // Custom post-restore logic (e.g., rebuild caches)
+        await RebuildInMemoryStateAsync(state, cancellationToken);
+    }
+}
+```
+
+#### Checkpoint Boundaries
+
+Define checkpoint boundaries in workflow definitions:
+
+```csharp
+var workflow = new WorkflowBuilder<InspectionInput, InspectionOutput>()
+    .AddStep("initialize", InitializeInspection)
+    .WithCheckpoint("after-init")  // Checkpoint boundary
+    .AddStep("generate-checklists", GenerateChecklists)
+    .WithCheckpoint("checklists-ready")  // Checkpoint boundary
+    .AddStep("process-findings", ProcessFindings)
+    .WithCheckpoint("findings-complete")  // Checkpoint boundary
+    .AddStep("generate-report", GenerateReport)
+    .Build();
+```
+
+### 6.6 Comparison: Agent Framework vs DTFx
 
 | Feature | Agent Framework | DTFx |
 |---------|-----------------|------|
@@ -572,48 +806,51 @@ await foreach (var update in executor.ResumeStreamAsync(workflowId, checkpointId
 | **AI Integration** | Native (Microsoft.Extensions.AI) | Manual integration |
 | **Streaming** | AG-UI protocol (SSE) | Polling-based |
 | **Human-in-Loop** | Built-in support | External events |
-| **Distributed** | Single worker (Phase 1) | Multiple workers polling |
+| **Distributed** | Inline with AG-UI | Multiple workers polling |
 
 ---
 
-## 7. Worker Strategy
+## 7. Agentic Workflow Architecture
 
-### 7.1 Single Worker Architecture (Phase 1)
+### 7.1 Inline Workflow Execution
 
-The Microsoft Agent Framework uses in-memory task queues (`ActivityTaskQueue`, `HostedActivityService`), which means **a single worker process** handles all workflow execution in Phase 1.
+In the Agentic-First architecture, **all workflows execute inline** with AG-UI requests. There is no separate background worker process. The WebApi hosts both the AG-UI server and the workflow executor.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Single Worker Process                    │
+│                    WebApi Process                            │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
+│  │  AG-UI Server                                       │   │
+│  │  - Receives SSE connections                         │   │
+│  │  - Manages agent conversations                      │   │
+│  │  - Streams responses to clients                     │   │
+│  └───────────────────────┬─────────────────────────────┘   │
+│                          │                                  │
+│  ┌───────────────────────▼─────────────────────────────┐   │
+│  │  Agent Orchestrator                                 │   │
+│  │  - Coordinates specialized agents                   │   │
+│  │  - Manages shared state                             │   │
+│  │  - Handles human-in-the-loop interactions           │   │
+│  └───────────────────────┬─────────────────────────────┘   │
+│                          │                                  │
+│  ┌───────────────────────▼─────────────────────────────┐   │
 │  │  WorkflowExecutor                                   │   │
-│  │  - Runs workflows                                   │   │
+│  │  - Runs agentic workflows                           │   │
 │  │  - Manages checkpoints                              │   │
-│  │  - Streams via AG-UI                                │   │
-│  └───────────────────────┬─────────────────────────────┘   │
-│                          │                                  │
-│  ┌───────────────────────▼─────────────────────────────┐   │
-│  │  ActivityTaskQueue (In-Memory)                      │   │
-│  │  - Queues activity tasks                            │   │
-│  │  - Single-process only                              │   │
-│  └───────────────────────┬─────────────────────────────┘   │
-│                          │                                  │
-│  ┌───────────────────────▼─────────────────────────────┐   │
-│  │  HostedActivityService                              │   │
-│  │  - Executes activities                              │   │
-│  │  - Background processing                            │   │
+│  │  - Persists agent thread state                      │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-                   ┌─────────────┐
-                   │    Redis    │
-                   │ Checkpoints │
-                   └─────────────┘
+          │                              │
+          ▼                              ▼
+   ┌─────────────┐                ┌─────────────┐
+   │    Redis    │                │ PostgreSQL  │
+   │ Checkpoints │                │   (appdb)   │
+   │  + Threads  │                └─────────────┘
+   └─────────────┘
 ```
 
-### 7.2 Aspire Configuration (Phase 1)
+### 7.2 Aspire Configuration
 
 ```csharp
 // Program.cs in MyApp.AppHost
@@ -623,7 +860,7 @@ var builder = DistributedApplication.CreateBuilder(args);
 var postgres = builder.AddPostgres("postgres")
     .AddDatabase("appdb");
 
-// Redis for workflow checkpoints
+// Redis for workflow checkpoints and agent thread persistence
 var redis = builder.AddRedis("redis");
 
 // Observability Stack (raw containers - no Aspire hosting packages yet)
@@ -647,24 +884,16 @@ var grafana = builder.AddContainer("grafana", "grafana/grafana", "11.6.0")
     .WaitFor(loki)
     .WaitFor(prometheus);
 
-// Single worker (no replicas in Phase 1)
-var worker = builder.AddProject<Projects.MyApp_Server_Worker>("worker")
-    .WithReference(postgres)
-    .WithReference(redis)
-    .WaitFor(postgres)
-    .WaitFor(redis);
-
-// WebApi with AG-UI server
+// WebApi with AG-UI server and inline workflow execution
 var webapi = builder.AddProject<Projects.MyApp_Server_WebApi>("webapi")
     .WithReference(postgres)
     .WithReference(redis)
-    .WithReference(worker)
     .WithEnvironment("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", loki.GetEndpoint("otlp-http"))
     .WaitFor(postgres)
     .WaitFor(redis)
     .WaitFor(loki);
 
-// React + CopilotKit frontend
+// React + CopilotKit frontend (Agentic-First UI)
 builder.AddViteApp("frontend", "../ui")
     .WithHttpEndpoint(port: 3000, env: "PORT")
     .WithReference(webapi)
@@ -673,192 +902,553 @@ builder.AddViteApp("frontend", "../ui")
 builder.Build().Run();
 ```
 
-### 7.3 Phase 2: Distributed Workers with Redis Streams
+### 7.3 Session Persistence
 
-For horizontal scaling, replace in-memory queues with Redis Streams:
+Agent conversations and workflow state are persisted to Redis using the `IStorage` interface, enabling users to resume sessions:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Redis Streams (Phase 2)                   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  workflow:tasks Stream                              │   │
-│  │  - Distributed task queue                           │   │
-│  │  - Consumer groups                                  │   │
-│  │  - Automatic rebalancing                            │   │
-│  └───────────────────────┬─────────────────────────────┘   │
-│                          │                                  │
-│      ┌───────────────────┼───────────────────┐             │
-│      │                   │                   │             │
-│      ▼                   ▼                   ▼             │
-│  ┌────────┐         ┌────────┐         ┌────────┐         │
-│  │Worker 1│         │Worker 2│         │Worker 3│         │
-│  │Consumer│         │Consumer│         │Consumer│         │
-│  │Group   │         │Group   │         │Group   │         │
-│  └────────┘         └────────┘         └────────┘         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Phase 2 Implementation:**
 ```csharp
-// Redis Streams-based task queue
-public class RedisActivityTaskQueue : IActivityTaskQueue
+// Agent thread persistence using IStorage interface
+public class AgentThreadStorageService
 {
-    private readonly IConnectionMultiplexer _redis;
-    private const string StreamKey = "workflow:tasks";
-    private const string ConsumerGroup = "workers";
+    private readonly IStorage _storage;
+    private readonly ILogger<AgentThreadStorageService> _logger;
     
-    public async Task EnqueueAsync(ActivityTask task)
+    // Key pattern: agent:thread:{userId}:{threadId}
+    private const string ThreadKeyPattern = "agent:thread:{0}:{1}";
+    private const string UserThreadListKeyPattern = "agent:threads:{0}";
+    
+    public AgentThreadStorageService(
+        IStorage storage,
+        ILogger<AgentThreadStorageService> logger)
     {
-        var db = _redis.GetDatabase();
-        await db.StreamAddAsync(StreamKey, [
-            new NameValueEntry("payload", JsonSerializer.Serialize(task))
-        ]);
+        _storage = storage;
+        _logger = logger;
     }
     
-    public async Task<ActivityTask?> DequeueAsync(string consumerId)
+    public async Task SaveThreadAsync(
+        string userId, 
+        string threadId, 
+        AgentThread thread,
+        CancellationToken cancellationToken)
     {
-        var db = _redis.GetDatabase();
-        var entries = await db.StreamReadGroupAsync(
-            StreamKey, ConsumerGroup, consumerId, count: 1);
-        // Process and acknowledge...
+        var key = string.Format(ThreadKeyPattern, userId, threadId);
+        var listKey = string.Format(UserThreadListKeyPattern, userId);
+        
+        // Save thread and update user's thread list
+        var changes = new Dictionary<string, object?>
+        {
+            [key] = thread,
+            [listKey] = await GetUpdatedThreadList(userId, threadId, thread, cancellationToken)
+        };
+        
+        await _storage.WriteAsync(changes, cancellationToken);
+        _logger.LogDebug("Saved thread {ThreadId} for user {UserId}", threadId, userId);
     }
+    
+    public async Task<AgentThread?> LoadThreadAsync(
+        string userId, 
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        var key = string.Format(ThreadKeyPattern, userId, threadId);
+        var result = await _storage.ReadAsync<AgentThread?>([key], cancellationToken);
+
+        return result.TryGetValue(key, out var value) ? value : null;
+    }
+    
+    public async Task<IEnumerable<AgentThreadSummary>> ListThreadsAsync(
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var listKey = string.Format(UserThreadListKeyPattern, userId);
+        var result = await _storage.ReadAsync<List<AgentThreadSummary>?>([listKey], cancellationToken);
+
+        if (result.TryGetValue(listKey, out var value) && value is not null)
+        {
+            return value;
+        }
+
+        return [];
+    }
+    
+    public async Task DeleteThreadAsync(
+        string userId,
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        var key = string.Format(ThreadKeyPattern, userId, threadId);
+        await _storage.DeleteAsync([key], cancellationToken);
+        
+        // Update thread list to remove this thread
+        await RemoveFromThreadList(userId, threadId, cancellationToken);
+    }
+    
+    private async Task<List<AgentThreadSummary>> GetUpdatedThreadList(
+        string userId,
+        string threadId,
+        AgentThread thread,
+        CancellationToken cancellationToken)
+    {
+        var existing = (await ListThreadsAsync(userId, cancellationToken)).ToList();
+        var summary = new AgentThreadSummary
+        {
+            ThreadId = threadId,
+            Title = thread.Title,
+            LastUpdated = DateTime.UtcNow
+        };
+        
+        var index = existing.FindIndex(t => t.ThreadId == threadId);
+        if (index >= 0)
+            existing[index] = summary;
+        else
+            existing.Insert(0, summary);
+        
+        return existing;
+    }
+}
+
+public record AgentThreadSummary
+{
+    public required string ThreadId { get; init; }
+    public string? Title { get; init; }
+    public DateTime LastUpdated { get; init; }
 }
 ```
 
-### 7.4 Scaling Considerations
+### 7.4 Future Scaling (Phase 2)
 
-| Phase | Workers | Queue Type | Use Case |
-|-------|---------|------------|----------|
-| **Phase 1** | 1 | In-memory | Development, low-volume |
-| **Phase 2** | N | Redis Streams | Production, high-volume |
+For high-volume scenarios, horizontal scaling can be achieved with Redis Streams:
 
-**When to Scale:**
-- CPU-bound workflows: Add more workers
-- I/O-bound workflows: Increase concurrency per worker
-- Long-running AI: Consider dedicated worker pools
+| Phase | Architecture | Use Case |
+|-------|-------------|----------|
+| **Phase 1** | Single WebApi with inline workflows | Development, moderate traffic |
+| **Phase 2** | Multiple WebApi instances + Redis Streams | Production, high-volume |
 
 ---
 
-## 8. Sample Workflow: Document Ingestion
+## 8. Sample Application: Home Inspection
 
-### 8.1 Workflow Description
+### 8.1 Application Overview
 
-The **IngestDocument** workflow demonstrates a fan-out/fan-in pattern with AI integration:
+The **Home Inspection** application demonstrates the Agentic-First architecture with specialized agents collaborating with a human inspector. This mirrors the human-agent collaboration pattern shown in the AG-UI Dojo demos.
 
-1. **Receive** document file via HTTP POST
-2. **Fan-out** to 3 parallel activities (Docling, MarkitDown, Marker)
-3. **Fan-in** results to AI summarization activity
-4. **Stream** results to client via AG-UI
-5. **Return** final summary
+**User Story:**
+> A home inspector initiates an inspection by describing the property (bedrooms, bathrooms, kitchen, shed, etc.). Specialized AI agents generate tailored checklists for each area. As the inspector works through the property, agents continuously process findings, add follow-up questions, and generate the final report. Inspections can be paused and resumed across sessions.
 
-### 8.2 Workflow Diagram
+### 8.2 Multi-Agent Architecture
 
 ```
-                    ┌──────────────────┐
-                    │  AG-UI Client    │
-                    │  (CopilotKit)    │
-                    └────────┬─────────┘
-                             │ SSE Stream
-                             ▼
-                    ┌──────────────────┐
-                    │  /api/agent      │
-                    │  AG-UI Endpoint  │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │ IngestDocument   │
-                    │    Workflow      │
-                    └────────┬─────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-          ▼                  ▼                  ▼
-   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-   │   Docling   │    │  MarkitDown │    │   Marker    │
-   │  Activity   │    │   Activity  │    │  Activity   │
-   └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
-          │                  │                  │
-          └──────────────────┼──────────────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │   AI Summarize   │
-                    │    Activity      │
-                    │ (LLM via M.E.AI) │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  Stream Result   │
-                    │   via AG-UI      │
-                    └──────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Home Inspection Workflow                              │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    Orchestrator Agent                                │   │
+│  │  - Coordinates specialized agents                                   │   │
+│  │  - Manages inspection state                                         │   │
+│  │  - Synthesizes final report                                         │   │
+│  └───────────────────────────┬─────────────────────────────────────────┘   │
+│                              │                                              │
+│      ┌───────────┬───────────┼───────────┬───────────┬───────────┐        │
+│      │           │           │           │           │           │        │
+│      ▼           ▼           ▼           ▼           ▼           ▼        │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐      │
+│  │  Roof  │ │ Found- │ │Bedroom │ │  Bath- │ │Kitchen │ │ Extern-│      │
+│  │ Agent  │ │ ation  │ │ Agent  │ │  room  │ │ Agent  │ │   al   │      │
+│  │        │ │ Agent  │ │        │ │ Agent  │ │        │ │ Agent  │      │
+│  └────┬───┘ └────┬───┘ └────┬───┘ └────┬───┘ └────┬───┘ └────┬───┘      │
+│       │          │          │          │          │          │          │
+│       └──────────┴──────────┴──────────┴──────────┴──────────┘          │
+│                              │                                           │
+│                              ▼                                           │
+│              ┌───────────────────────────────────┐                      │
+│              │     Human Inspector (via UI)      │                      │
+│              │  - Voice/text input               │                      │
+│              │  - Checklist completion           │                      │
+│              │  - Photo attachments              │                      │
+│              │  - Follow-up responses            │                      │
+│              └───────────────────────────────────┘                      │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.3 Implementation Details
+### 8.3 Specialized Agents
 
-#### Workflow Definition
+| Agent | Responsibility | Checklist Items |
+|-------|---------------|-----------------|
+| **RoofAgent** | Roof and attic inspection | Shingles, gutters, flashing, ventilation, leaks |
+| **FoundationAgent** | Foundation and structure | Cracks, moisture, drainage, settling, structural integrity |
+| **BedroomAgent** | Bedroom inspection | Windows, outlets, closets, smoke detectors, flooring |
+| **BathroomAgent** | Bathroom inspection | Plumbing, ventilation, fixtures, water pressure, mold |
+| **KitchenAgent** | Kitchen inspection | Appliances, cabinets, counters, electrical, plumbing |
+| **ExternalAgent** | Exterior and grounds | Siding, doors, walkways, landscaping, drainage |
+
+### 8.4 Multi-Agent State Sharing
+
+Multiple specialized agents coordinate through shared state mechanisms provided by the Agent Framework:
+
+#### WorkflowContext Shared State
+
+Agents share state during workflow execution via `WorkflowContext.SharedState`:
 
 ```csharp
-public static class DocumentIngestionWorkflow
+// Orchestrator sets shared state for all agents
+public class InspectionOrchestrator
 {
-    public static WorkflowBuilder<DocumentInput, DocumentOutput> Create(
-        IChatClient chatClient)
+    public async Task ExecuteStepAsync(WorkflowContext context)
     {
-        return new WorkflowBuilder<DocumentInput, DocumentOutput>()
-            .AddStep("extract-parallel", async (context, input) =>
-            {
-                // Fan-out: Execute all extractors in parallel
-                var tasks = new[]
-                {
-                    context.RunActivityAsync<string>("docling", input.FileContent),
-                    context.RunActivityAsync<string>("markitdown", input.FileContent),
-                    context.RunActivityAsync<string>("marker", input.FileContent)
-                };
-                
-                var results = await Task.WhenAll(tasks);
-                return new ExtractionResults
-                {
-                    DoclingResult = results[0],
-                    MarkitDownResult = results[1],
-                    MarkerResult = results[2]
-                };
-            })
-            .WithCheckpoint("after-extraction")
-            .AddStep("summarize", async (context, extraction) =>
-            {
-                // Fan-in: AI summarization
-                var prompt = $"""
-                    Summarize these document extractions:
-                    
-                    Docling: {extraction.DoclingResult}
-                    MarkitDown: {extraction.MarkitDownResult}
-                    Marker: {extraction.MarkerResult}
-                    """;
-                
-                var response = await chatClient.CompleteAsync(prompt);
-                return new DocumentOutput
-                {
-                    Summary = response.Message.Text,
-                    ProcessedAt = DateTime.UtcNow
-                };
-            })
-            .WithCheckpoint("completed");
+        // Set shared state accessible by all agents
+        context.SharedState["property"] = propertyStructure;
+        context.SharedState["findings"] = new List<Finding>();
+        context.SharedState["currentArea"] = "roof";
+        
+        // Each agent can read and update shared state
+        await _roofAgent.InspectAsync(context);
+        
+        // Shared state persists across checkpoints
+        var findings = (List<Finding>)context.SharedState["findings"];
+    }
+}
+
+// Specialized agent reads shared state
+public class RoofAgent
+{
+    public async Task InspectAsync(WorkflowContext context)
+    {
+        var property = (PropertyStructure)context.SharedState["property"];
+        var findings = (List<Finding>)context.SharedState["findings"];
+        
+        // Add findings to shared state
+        findings.Add(new Finding { Area = "roof", Issue = "Missing shingles" });
     }
 }
 ```
 
-### 8.4 Activity Implementations
+#### AG-UI State Injection
 
-Each activity performs document processing:
+Frontend state is injected into agents via the `ag_ui_state` property in AG-UI requests:
 
-| Activity | Input | Output | Purpose |
-|----------|-------|--------|---------|
-| `DoclingActivity` | Base64 file | Markdown | Convert using IBM Docling |
-| `MarkitDownActivity` | Base64 file | Markdown | Convert using Microsoft MarkitDown |
-| `MarkerActivity` | Base64 file | Markdown | OCR using Marker library |
-| `SummarizeActivity` | 3 markdown texts | Summary | AI summarization via M.E.AI |
+```csharp
+// State from frontend is available in agent context
+public class HomeInspectionAgent : ChatClientAgent
+{
+    protected override async Task OnTurnAsync(ITurnContext turnContext)
+    {
+        // Access frontend state injected via AG-UI
+        var agUiState = turnContext.Activity.Value as JObject;
+        var currentChecklist = agUiState?["currentChecklist"]?.ToObject<Checklist>();
+        var inspectorLocation = agUiState?["location"]?.ToObject<GeoLocation>();
+        
+        // Process with frontend context
+        await ProcessWithContextAsync(currentChecklist, inspectorLocation);
+    }
+}
+```
+
+```tsx
+// Frontend: inject state into AG-UI requests
+function InspectionView() {
+    const { currentChecklist, location } = useInspectionState();
+    
+    return (
+        <CopilotKit
+            runtimeUrl="/api/agent"
+            agentState={{
+                currentChecklist,
+                location,
+                timestamp: Date.now()
+            }}
+        >
+            <InspectionUI />
+        </CopilotKit>
+    );
+}
+```
+
+#### ChatHistory Sharing Between Agents
+
+Agents can share conversation history for context continuity:
+
+```csharp
+// Pass conversation context between specialized agents
+public async Task HandoffToAgentAsync(
+    string targetAgentName,
+    IList<ChatMessage> relevantHistory,
+    WorkflowContext context)
+{
+    var targetAgent = _specializedAgents[targetAgentName];
+    
+    // Inject relevant history as context
+    var contextMessages = relevantHistory
+        .Where(m => m.Role == ChatRole.User || m.Role == ChatRole.Assistant)
+        .TakeLast(10)  // Last 10 messages for context
+        .ToList();
+    
+    // Store in shared state for target agent
+    context.SharedState[$"history:{targetAgentName}"] = contextMessages;
+    
+    await targetAgent.ProcessAsync(context);
+}
+```
+
+### 8.5 Workflow Implementation
+
+```csharp
+public class HomeInspectionOrchestrator
+{
+    private readonly Dictionary<string, IChatClientAgent> _specializedAgents;
+    private readonly AgentThreadStorageService _threadStorage;
+    private readonly IStorage _checkpointStorage;
+
+    public async IAsyncEnumerable<AgentUpdate> StartInspectionAsync(
+        HomeInspectionInput input,
+        string userId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // Create or resume inspection thread
+        var threadId = input.InspectionId ?? Guid.NewGuid().ToString();
+        var thread = await _threadStorage.LoadThreadAsync(userId, threadId, cancellationToken) 
+            ?? new AgentThread { Id = threadId };
+
+        yield return new AgentUpdate { 
+            Type = "thread_created", 
+            ThreadId = threadId 
+        };
+
+        // Initialize property structure
+        var propertyStructure = new PropertyStructure
+        {
+            Bedrooms = input.BedroomCount,
+            Bathrooms = input.BathroomCount,
+            HasKitchen = true,
+            HasBasement = input.HasBasement,
+            HasGarage = input.HasGarage,
+            ExternalStructures = input.ExternalStructures
+        };
+
+        // Generate checklists from specialized agents
+        var checklists = new Dictionary<string, InspectionChecklist>();
+        
+        foreach (var (area, agent) in GetRequiredAgents(propertyStructure))
+        {
+            yield return new AgentUpdate { 
+                Type = "generating_checklist", 
+                Area = area 
+            };
+
+            var checklist = await agent.GenerateChecklistAsync(propertyStructure);
+            checklists[area] = checklist;
+            
+            yield return new AgentUpdate { 
+                Type = "checklist_ready", 
+                Area = area,
+                Checklist = checklist 
+            };
+        }
+
+        // Save checkpoint using IStorage
+        var checkpointKey = $"inspection:{threadId}:checkpoint:checklists-generated";
+        await _checkpointStorage.WriteAsync(new Dictionary<string, object>
+        {
+            [checkpointKey] = new
+            {
+                PropertyStructure = propertyStructure,
+                Checklists = checklists,
+                Timestamp = DateTime.UtcNow
+            }
+        }, cancellationToken);
+
+        // Stream shared state to frontend for UI rendering
+        yield return new AgentUpdate {
+            Type = "state_sync",
+            State = new InspectionState
+            {
+                ThreadId = threadId,
+                PropertyStructure = propertyStructure,
+                Checklists = checklists,
+                CurrentArea = checklists.Keys.First()
+            }
+        };
+    }
+}
+```
+
+### 8.6 Human-in-the-Loop Collaboration
+
+The inspection workflow continuously processes inspector input and generates follow-ups:
+
+```csharp
+public async IAsyncEnumerable<AgentUpdate> ProcessInspectorInputAsync(
+    string threadId,
+    string userId,
+    InspectorInput input,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+{
+    var thread = await _threadStorage.LoadThreadAsync(userId, threadId, cancellationToken);
+    var agent = _specializedAgents[input.CurrentArea];
+
+    // Process the inspector's finding
+    var analysis = await agent.AnalyzeFindingAsync(new FindingContext
+    {
+        ChecklistItem = input.ChecklistItem,
+        InspectorNotes = input.Notes,
+        Severity = input.Severity,
+        Photos = input.PhotoUrls
+    });
+
+    yield return new AgentUpdate
+    {
+        Type = "finding_analyzed",
+        Analysis = analysis
+    };
+
+    // Generate follow-up questions if needed
+    if (analysis.RequiresFollowUp)
+    {
+        yield return new AgentUpdate
+        {
+            Type = "followup_required",
+            Questions = analysis.FollowUpQuestions,
+            Priority = analysis.Priority
+        };
+    }
+
+    // Update checklist state
+    yield return new AgentUpdate
+    {
+        Type = "checklist_updated",
+        Item = input.ChecklistItem,
+        Status = "completed",
+        Findings = analysis.Summary
+    };
+
+    // Save progress checkpoint using IStorage (enables resume)
+    var checkpointKey = $"inspection:{threadId}:checkpoint:item-{input.ChecklistItem}";
+    var checkpointIndexKey = $"inspection:{threadId}:checkpoint-index";
+
+    var indexResult = await _checkpointStorage.ReadAsync<List<string>?>(
+        [checkpointIndexKey], cancellationToken);
+    var index = indexResult.TryGetValue(checkpointIndexKey, out var existing) && existing is not null
+        ? existing
+        : new List<string>();
+
+    if (!index.Contains(checkpointKey, StringComparer.Ordinal))
+    {
+        index.Add(checkpointKey);
+    }
+
+    await _checkpointStorage.WriteAsync(new Dictionary<string, object?>
+    {
+        [checkpointKey] = new
+        {
+            Input = input,
+            Analysis = analysis,
+            Timestamp = DateTime.UtcNow
+        },
+        [checkpointIndexKey] = index
+    }, cancellationToken);
+}
+```
+
+### 8.7 Resume Inspection Workflow
+
+Inspectors can pause and resume inspections across sessions:
+
+```csharp
+public async IAsyncEnumerable<AgentUpdate> ResumeInspectionAsync(
+    string threadId,
+    string userId,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+{
+    // Load existing thread and state
+    var thread = await _threadStorage.LoadThreadAsync(userId, threadId, cancellationToken);
+    if (thread == null)
+    {
+        yield return new AgentUpdate { Type = "error", Message = "Inspection not found" };
+        yield break;
+    }
+
+    // Load latest checkpoint using explicit index (no wildcard keys)
+    var indexKey = $"inspection:{threadId}:checkpoint-index";
+    var indexResult = await _checkpointStorage.ReadAsync<List<string>?>([indexKey], cancellationToken);
+    var checkpointKeys = indexResult.TryGetValue(indexKey, out var keyList) && keyList is not null
+        ? keyList
+        : new List<string>();
+
+    CheckpointData? latestCheckpoint = null;
+
+    if (checkpointKeys.Count > 0)
+    {
+        var checkpoints = await _checkpointStorage.ReadAsync<CheckpointData?>(checkpointKeys, cancellationToken);
+        latestCheckpoint = checkpoints.Values
+            .Where(c => c is not null)
+            .OrderByDescending(c => c!.Timestamp)
+            .FirstOrDefault();
+    }
+    
+    yield return new AgentUpdate
+    {
+        Type = "inspection_resumed",
+        State = latestCheckpoint?.State,
+        LastActivity = latestCheckpoint?.Timestamp
+    };
+
+    // Restore UI state via shared state sync
+    yield return new AgentUpdate
+    {
+        Type = "state_sync",
+        State = latestCheckpoint?.State
+    };
+
+    yield return new AgentUpdate
+    {
+        Type = "ready",
+        Message = "Inspection resumed. Continue where you left off."
+    };
+}
+```
+
+### 8.8 Final Report Generation
+
+```csharp
+public async IAsyncEnumerable<AgentUpdate> GenerateReportAsync(
+    string threadId,
+    string userId,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+{
+    var thread = await _threadStorage.LoadThreadAsync(userId, threadId, cancellationToken);
+    
+    // Load all checkpoints using explicit index (no wildcard keys)
+    var indexKey = $"inspection:{threadId}:checkpoint-index";
+    var indexResult = await _checkpointStorage.ReadAsync<List<string>?>([indexKey], cancellationToken);
+    var checkpointKeys = indexResult.TryGetValue(indexKey, out var keyList) && keyList is not null
+        ? keyList
+        : new List<string>();
+
+    var allCheckpoints = checkpointKeys.Count == 0
+        ? new Dictionary<string, CheckpointData?>()
+        : await _checkpointStorage.ReadAsync<CheckpointData?>(checkpointKeys, cancellationToken);
+
+    yield return new AgentUpdate { Type = "generating_report" };
+
+    // Orchestrator synthesizes findings from all agents
+    var allFindings = allCheckpoints.Values
+        .Where(c => c is not null)
+        .SelectMany(c => c!.Findings ?? []);
+        
+    var report = await _orchestratorAgent.SynthesizeReportAsync(new ReportContext
+    {
+        AllFindings = allFindings,
+        PropertyStructure = thread.PropertyStructure,
+        InspectorId = userId
+    });
+
+    yield return new AgentUpdate
+    {
+        Type = "report_ready",
+        Report = report,
+        DownloadUrl = await SaveReportAsync(report)
+    };
+}
+```
 
 ---
 
@@ -1518,7 +2108,7 @@ builder.AddNpgsqlDbContext<ApplicationDbContext>("appdb",
 
 **Required NuGet Packages:**
 - `Aspire.Npgsql.EntityFrameworkCore.PostgreSQL` (13.1.0) - Hosting integration
-- `Microsoft.Extensions.ServiceDiscovery` (9.1.0) - Service discovery client
+- `Microsoft.Extensions.ServiceDiscovery` (10.1.0) - Service discovery client
 
 **Migration Commands:**
 ```bash
@@ -1527,6 +2117,152 @@ dotnet ef migrations add InitialCreate --project MyApp.Server.Infrastructure --s
 
 # Update database
 dotnet ef database update --project MyApp.Server.Infrastructure --startup-project MyApp.Server.WebApi
+```
+
+### 9.10 Graceful Shutdown Handling
+
+AG-UI uses Server-Sent Events (SSE) for streaming, which requires proper connection draining during shutdown to avoid abrupt client disconnections.
+
+#### SSE Connection Manager
+
+```csharp
+public interface ISseConnectionManager
+{
+    void RegisterConnection(string connectionId, HttpResponse response);
+    void RemoveConnection(string connectionId);
+    Task DrainConnectionsAsync(TimeSpan timeout, CancellationToken cancellationToken);
+    int ActiveConnectionCount { get; }
+}
+
+public class SseConnectionManager : ISseConnectionManager
+{
+    private readonly ConcurrentDictionary<string, HttpResponse> _connections = new();
+    private readonly ILogger<SseConnectionManager> _logger;
+
+    public SseConnectionManager(ILogger<SseConnectionManager> logger)
+    {
+        _logger = logger;
+    }
+
+    public void RegisterConnection(string connectionId, HttpResponse response)
+    {
+        _connections.TryAdd(connectionId, response);
+        _logger.LogDebug("SSE connection registered: {ConnectionId}. Active: {Count}", 
+            connectionId, _connections.Count);
+    }
+
+    public void RemoveConnection(string connectionId)
+    {
+        _connections.TryRemove(connectionId, out _);
+        _logger.LogDebug("SSE connection removed: {ConnectionId}. Active: {Count}", 
+            connectionId, _connections.Count);
+    }
+
+    public int ActiveConnectionCount => _connections.Count;
+
+    public async Task DrainConnectionsAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (_connections.IsEmpty)
+            return;
+
+        _logger.LogInformation("Draining {Count} SSE connections with {Timeout}s timeout", 
+            _connections.Count, timeout.TotalSeconds);
+
+        // Send shutdown notification to all clients
+        var shutdownTasks = _connections.Values.Select(async response =>
+        {
+            try
+            {
+                await response.WriteAsync(
+                    "event: shutdown\ndata: Server is shutting down\n\n", 
+                    cancellationToken);
+                await response.Body.FlushAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to send shutdown notification");
+            }
+        });
+
+        await Task.WhenAll(shutdownTasks);
+
+        // Wait for connections to drain or timeout
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+
+        while (!_connections.IsEmpty && !cts.Token.IsCancellationRequested)
+        {
+            await Task.Delay(100, cts.Token);
+        }
+
+        if (!_connections.IsEmpty)
+        {
+            _logger.LogWarning("Shutdown completed with {Count} active SSE connections", 
+                _connections.Count);
+        }
+    }
+}
+```
+
+#### Shutdown Service
+
+```csharp
+public class SseShutdownService : IHostedService
+{
+    private readonly ISseConnectionManager _connectionManager;
+    private readonly IHostApplicationLifetime _lifetime;
+    private readonly ILogger<SseShutdownService> _logger;
+    private readonly TimeSpan _drainTimeout;
+
+    public SseShutdownService(
+        ISseConnectionManager connectionManager,
+        IHostApplicationLifetime lifetime,
+        ILogger<SseShutdownService> logger,
+        IConfiguration configuration)
+    {
+        _connectionManager = connectionManager;
+        _lifetime = lifetime;
+        _logger = logger;
+        _drainTimeout = TimeSpan.FromSeconds(
+            configuration.GetValue("Shutdown:DrainTimeoutSeconds", 30));
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _lifetime.ApplicationStopping.Register(OnApplicationStopping);
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private void OnApplicationStopping()
+    {
+        _logger.LogInformation("Application stopping. Draining SSE connections...");
+        
+        // Drain connections synchronously during shutdown
+        _connectionManager.DrainConnectionsAsync(
+            _drainTimeout, 
+            CancellationToken.None).GetAwaiter().GetResult();
+    }
+}
+```
+
+#### Registration
+
+```csharp
+// Program.cs
+builder.Services.AddSingleton<ISseConnectionManager, SseConnectionManager>();
+builder.Services.AddHostedService<SseShutdownService>();
+```
+
+#### Configuration
+
+```json
+{
+  "Shutdown": {
+    "DrainTimeoutSeconds": 30
+  }
+}
 ```
 
 ---
@@ -1564,9 +2300,9 @@ This section describes the unified observability stack for logs, metrics, and da
 │  ┌──────────┴───────────────────────────────┴──────────┐               │
 │  │              .NET Applications                       │               │
 │  │                                                      │               │
-│  │  WebApi          Worker                              │               │
-│  │  - /metrics      - /metrics                          │               │
-│  │  - OTLP logs     - OTLP logs                         │               │
+│  │  WebApi                                              │               │
+│  │  - /metrics                                          │               │
+│  │  - OTLP logs                                         │               │
 │  └──────────────────────────────────────────────────────┘               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1597,36 +2333,34 @@ common:
 
 # OTLP ingestion configuration
 limits_config:
-  allow_structured_metadata: true
-  otlp_config:
-    resource_attributes:
-      attributes_config:
-        - action: index_label
-          attributes:
-            - service.name
-            - service.namespace
-            - deployment.environment
-    scope_attributes:
-      - action: drop
-        attributes:
-          - telemetry.sdk.*
-    log_attributes:
-      - action: structured_metadata
-        attributes:
-          - http.request.method
-          - http.response.status_code
-          - url.path
-          - user_agent.original
+    allow_structured_metadata: true
+    retention_period: 336h  # 14 days
+    max_query_lookback: 336h
+    otlp_config:
+        resource_attributes:
+            attributes_config:
+                - action: index_label
+                    attributes:
+                        - service.name
+                        - service.namespace
+                        - deployment.environment
+        scope_attributes:
+            - action: drop
+                attributes:
+                    - telemetry.sdk.*
+        log_attributes:
+            - action: structured_metadata
+                attributes:
+                    - http.request.method
+                    - http.response.status_code
+                    - url.path
+                    - user_agent.original
 
 # Retention configuration (14 days default)
 compactor:
-  retention_enabled: true
-  retention_delete_delay: 2h
-  delete_request_store: filesystem
-
-limits_config:
-  retention_period: 336h  # 14 days
-  max_query_lookback: 336h
+    retention_enabled: true
+    retention_delete_delay: 2h
+    delete_request_store: filesystem
 
 schema_config:
   configs:
@@ -1660,12 +2394,6 @@ scrape_configs:
   - job_name: 'webapi'
     static_configs:
       - targets: ['webapi:8080']
-    metrics_path: /metrics
-    scheme: http
-
-  - job_name: 'worker'
-    static_configs:
-      - targets: ['worker:8080']
     metrics_path: /metrics
     scheme: http
 
@@ -1789,7 +2517,111 @@ The `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` environment variable is set in the Aspire
 | **Loki** | http://localhost:3100 | Log queries (via Grafana) |
 | **Prometheus** | http://localhost:9090 | Metric queries and targets |
 
-### 10.9 Phase 2: Promtail for Container Logs
+### 10.9 Service Level Indicators (SLIs) and Objectives (SLOs)
+
+#### SLI Definitions
+
+| SLI | Definition | Measurement |
+|-----|------------|-------------|
+| **Availability** | Percentage of successful requests (non-5xx responses) | `sum(rate(http_server_request_duration_seconds_count{http_response_status_code!~"5.."}[5m])) / sum(rate(http_server_request_duration_seconds_count[5m]))` |
+| **Latency (p95)** | 95th percentile response time for AG-UI requests | `histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{http_route="/api/agent"}[5m])) by (le))` |
+| **Workflow Success** | Percentage of workflows completing successfully | `sum(workflow_completions{status="completed"}) / sum(workflow_completions)` |
+| **Error Rate** | Rate of errors per second | `rate(workflow_errors_total[5m])` |
+
+#### SLO Targets
+
+| Service | SLI | Target | Window |
+|---------|-----|--------|--------|
+| AG-UI Endpoint | Availability | 99.5% | 30 days |
+| AG-UI Endpoint | Latency (p95) | < 30s | 30 days |
+| Workflows | Success Rate | 99% | 30 days |
+| Authentication | Availability | 99.9% | 30 days |
+
+#### Prometheus Alerting Rules
+
+```yaml
+# config/prometheus-alerts.yaml
+groups:
+  - name: myapp-slos
+    rules:
+      - alert: HighErrorRate
+        expr: |
+                    sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+                    / sum(rate(http_server_request_duration_seconds_count[5m])) > 0.005
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 0.5%)"
+          
+      - alert: AGUILatencyHigh
+        expr: |
+                    histogram_quantile(0.95,
+                        sum(rate(http_server_request_duration_seconds_bucket{http_route="/api/agent"}[5m])) by (le)) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AG-UI p95 latency above 30 seconds"
+          description: "P95 latency is {{ $value | humanizeDuration }}"
+          
+      - alert: WorkflowFailureRate
+        expr: |
+          sum(rate(workflow_errors_total[5m])) 
+          / sum(rate(workflow_completions[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Workflow failure rate above 1%"
+          description: "Failure rate is {{ $value | humanizePercentage }}"
+          
+      - alert: RedisConnectionFailure
+        expr: redis_connected_clients < 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis connection lost"
+          description: "No connected clients to Redis"
+
+      - alert: PostgresConnectionFailure
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL connection lost"
+          description: "Cannot connect to PostgreSQL"
+```
+
+#### Prometheus Configuration Update
+
+```yaml
+# config/prometheus.yaml - add alerting configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - prometheus-alerts.yaml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093  # Add when Alertmanager is configured
+
+scrape_configs:
+  - job_name: 'webapi'
+    static_configs:
+      - targets: ['webapi:8080']
+    metrics_path: /metrics
+    scheme: http
+```
+
+### 10.10 Phase 2: Promtail for Container Logs
 
 For non-.NET container logs (PostgreSQL, Redis, nginx), Promtail will be added in Phase 2:
 
@@ -1828,28 +2660,44 @@ The **AG-UI (Agent User Interaction) Protocol** is a standardized communication 
 
 ### 11.2 AG-UI Server Setup
 
-**WebApi Configuration:**
+**WebApi Configuration (minimal APIs only, latest `Microsoft.Agents.AI.*` preview):**
 ```csharp
-// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+}).AddCookie();
+
+builder.Services.AddAuthorization();
 builder.Services.AddAGUI();
 
-// Configure the AI agent
+// Configure the AI chat client and agent
 var chatClient = builder.Services
     .AddOpenAIClient(builder.Configuration["OpenAI:ApiKey"])
     .AsIChatClient();
 
-var tools = [
+var tools = new[]
+{
     AIFunctionFactory.Create(documentService.IngestDocumentAsync),
     AIFunctionFactory.Create(documentService.GetDocumentStatusAsync),
-];
+};
 
-ChatClientAgent agent = chatClient.CreateAIAgent(
+var agent = chatClient.CreateAIAgent(
     name: "DocumentAssistant",
     instructions: "You are a helpful assistant for document processing...",
     tools: tools);
 
-// Map the AG-UI endpoint
-app.MapAGUI("/api/agent", agent);
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Minimal API mapping for AG-UI (no MVC/controllers)
+app.MapAGUI("/api/agent", agent)
+    .RequireAuthorization();
+
+app.Run();
 ```
 
 ### 11.3 AG-UI Protocol Features
@@ -1960,18 +2808,64 @@ public class DocumentService
 
 ### 11.6 Human-in-the-Loop
 
+Human-in-the-loop is implemented through **tool-based patterns** using AG-UI events. The backend defines sensitive tools, and the frontend handles confirmation UI via CopilotKit.
+
+#### Backend Tool Definition
+
 ```csharp
-// Backend tool requiring confirmation
-[Description("Delete a document permanently")]
-[RequiresConfirmation("Are you sure you want to delete this document?")]
+// Backend tool that requires human confirmation
+[Description("Delete a document permanently - requires user confirmation")]
 public async Task<DeleteResult> DeleteDocumentAsync(
     [Description("Document ID to delete")] string documentId,
     CancellationToken cancellationToken)
 {
     await _documentRepository.DeleteAsync(documentId);
-    return new DeleteResult { Success = true };
+    return new DeleteResult { Success = true, DocumentId = documentId };
 }
 ```
+
+#### Frontend Confirmation Handler
+
+```tsx
+// Frontend: Handle tool confirmation via useCopilotAction
+import { useCopilotAction } from "@copilotkit/react-core";
+
+function DocumentManager() {
+    useCopilotAction({
+        name: "deleteDocument",
+        description: "Delete a document permanently",
+        parameters: [
+            { name: "documentId", type: "string", required: true }
+        ],
+        // renderAndWait enables human-in-the-loop confirmation
+        renderAndWait: ({ args, status, handler }) => {
+            if (status === "executing") {
+                return (
+                    <ConfirmationDialog
+                        title="Delete Document"
+                        message={`Are you sure you want to delete document ${args.documentId}?`}
+                        onConfirm={() => handler.confirm()}
+                        onCancel={() => handler.cancel()}
+                    />
+                );
+            }
+            return null;
+        },
+    });
+    
+    return <DocumentList />;
+}
+```
+
+#### AG-UI Event Flow
+
+The human-in-the-loop flow uses AG-UI protocol events:
+
+1. **ToolCallStart** - Agent requests tool execution
+2. **Frontend renders confirmation UI** - `renderAndWait` displays dialog
+3. **User confirms or cancels** - `handler.confirm()` or `handler.cancel()`
+4. **ToolCallEnd** - Tool execution completes (or is cancelled)
+5. **ToolCallResult** - Result streamed back to agent
 
 ---
 
@@ -2024,7 +2918,7 @@ builder.Services.AddAuthentication(options =>
 {
     options.Cookie.HttpOnly = true;
     options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SameSite = SameSiteMode.Lax; // OAuth provider redirects require Lax/None
     options.ExpireTimeSpan = TimeSpan.FromDays(7);
 })
 .AddGoogle(options =>
@@ -2191,10 +3085,13 @@ export default function App() {
 |----------|----------------|
 | **HTTPS Only** | All auth flows over TLS |
 | **HttpOnly Cookies** | Prevent XSS token theft |
-| **SameSite=Strict** | CSRF protection |
+| **SameSite=Lax/None** | Lax for OAuth redirects; None requires Secure |
 | **Secure Flag** | Cookie only sent over HTTPS |
 | **Short Token Expiry** | 7 days with refresh |
 | **CORS Configuration** | Restrict to known origins |
+| **PKCE** | Required for mobile OAuth flows |
+| **Redis TLS** | Encrypted connections to Redis |
+| **Rate Limiting** | Protect against abuse |
 
 ```csharp
 // CORS configuration
@@ -2208,6 +3105,138 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader();
     });
 });
+```
+
+#### PKCE for Mobile OAuth
+
+Mobile OAuth flows require PKCE (Proof Key for Code Exchange) to prevent authorization code interception:
+
+```csharp
+// Generate PKCE code verifier and challenge
+public static class PkceHelper
+{
+    public static (string CodeVerifier, string CodeChallenge) Generate()
+    {
+        var codeVerifier = GenerateCodeVerifier();
+        var codeChallenge = GenerateCodeChallenge(codeVerifier);
+        return (codeVerifier, codeChallenge);
+    }
+
+    private static string GenerateCodeVerifier()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(32);
+        return Base64UrlEncode(bytes);
+    }
+
+    private static string GenerateCodeChallenge(string codeVerifier)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(codeVerifier));
+        return Base64UrlEncode(hash);
+    }
+
+    private static string Base64UrlEncode(byte[] bytes) =>
+        Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+}
+```
+
+#### Redis TLS Configuration
+
+```csharp
+// Secure Redis connection with TLS
+var redis = ConnectionMultiplexer.Connect(new ConfigurationOptions
+{
+    EndPoints = { "redis-server:6380" },
+    Ssl = true,
+    SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+    Password = configuration["Redis:Password"],
+    AbortOnConnectFail = false
+});
+```
+
+#### CSRF Token Validation
+
+```csharp
+// CSRF state token validation using IDataProtectionProvider
+public class CsrfStateValidator
+{
+    private readonly IDataProtector _protector;
+
+    public CsrfStateValidator(IDataProtectionProvider provider)
+    {
+        _protector = provider.CreateProtector("OAuth.State");
+    }
+
+    public string GenerateState(string redirectUri)
+    {
+        var payload = new StatePayload
+        {
+            RedirectUri = redirectUri,
+            Nonce = Guid.NewGuid().ToString(),
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        };
+        var json = JsonSerializer.Serialize(payload);
+        return _protector.Protect(json);
+    }
+
+    public bool ValidateState(string state, out StatePayload? payload)
+    {
+        try
+        {
+            var json = _protector.Unprotect(state);
+            payload = JsonSerializer.Deserialize<StatePayload>(json);
+            
+            // Check timestamp is within 10 minutes
+            var timestamp = DateTimeOffset.FromUnixTimeSeconds(payload!.Timestamp);
+            return DateTimeOffset.UtcNow - timestamp < TimeSpan.FromMinutes(10);
+        }
+        catch
+        {
+            payload = null;
+            return false;
+        }
+    }
+}
+```
+
+#### Rate Limiting for SSE Endpoints
+
+```csharp
+// Program.cs - Configure rate limiting with sliding window
+builder.Services.AddRateLimiter(options =>
+{
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey: context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? context.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous",
+            factory: partition => new SlidingWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 4
+            }));
+
+    // Special limiter for AG-UI endpoint (allows longer connections)
+    options.AddPolicy("AgUi", context =>
+        RateLimitPartition.GetConcurrencyLimiter(
+            partitionKey: context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            factory: partition => new ConcurrencyLimiterOptions
+            {
+                PermitLimit = 5,  // Max 5 concurrent SSE connections per user
+                QueueLimit = 2,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
+});
+
+// Apply rate limiting
+app.UseRateLimiter();
+app.MapAGUI("/api/agent", agent)
+    .RequireAuthorization()
+    .RequireRateLimiting("AgUi");
 ```
 
 ---
@@ -2840,17 +3869,6 @@ services:
       - redis
       - loki
 
-  worker:
-    image: myapp-worker:latest
-    environment:
-      ConnectionStrings__appdb: Host=postgres;Database=appdb;...
-      ConnectionStrings__redis: redis:6379
-      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://loki:4318
-    depends_on:
-      - postgres
-      - redis
-      - loki
-
   frontend:
     image: myapp-frontend:latest
     ports:
@@ -2872,20 +3890,20 @@ volumes:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: myapp-worker
+  name: myapp-webapi
 spec:
-  replicas: 1  # Single worker in Phase 1
+  replicas: 1  # Single instance for Phase 1
   selector:
     matchLabels:
-      app: myapp-worker
+      app: myapp-webapi
   template:
     metadata:
       labels:
-        app: myapp-worker
+        app: myapp-webapi
     spec:
       containers:
-      - name: worker
-        image: myapp-worker:latest
+      - name: webapi
+        image: myapp-webapi:latest
         env:
         - name: ConnectionStrings__appdb
           valueFrom:
@@ -2897,13 +3915,26 @@ spec:
             secretKeyRef:
               name: myapp-secrets
               key: redis-connection-string
+        - name: Authentication__Google__ClientId
+          valueFrom:
+            secretKeyRef:
+              name: myapp-secrets
+              key: google-client-id
         resources:
           requests:
             cpu: 500m
-            memory: 256Mi
-          limits:
-            cpu: 1000m
             memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 1Gi
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
 ```
 
 ---
@@ -2914,7 +3945,7 @@ spec:
 
 | Item | Description | Priority |
 |------|-------------|----------|
-| **Distributed Workers** | Redis Streams for horizontal scaling | High |
+| **Horizontal Scaling** | Redis Streams for multiple WebApi instances | High |
 | **Retry Policies** | Configure activity retry with exponential backoff | High |
 | **Dead Letter Queue** | Handle poison messages | High |
 | **Workflow Versioning** | Support side-by-side workflow versions | Medium |
@@ -2947,10 +3978,10 @@ For a complete visual representation of the solution architecture, including all
 **[.github/copilot-instructions.md](.github/copilot-instructions.md)**
 
 The diagram includes:
-- All solution projects (WebApi, Worker, Client apps, Shared libraries)
+- All solution projects (WebApi, Client apps, Shared libraries)
 - Project dependencies and references
 - Data flow between components
-- Database connections (durabletask and appdb)
+- Database connections (appdb and Redis)
 - Authentication flow with social providers
 - Aspire orchestration architecture
 
@@ -3001,13 +4032,13 @@ npx cap open ios
 | Workflows | `src/MyApp.Server.Application/Workflows/` |
 | Activities | `src/MyApp.Server.Infrastructure/Activities/` |
 | Redis Storage | `src/MyApp.Server.Infrastructure/Storage/RedisCheckpointStorage.cs` |
+| Agent Thread Store | `src/MyApp.Server.Infrastructure/Storage/RedisAgentThreadStorage.cs` |
 | DbContext | `src/MyApp.Server.Infrastructure/Data/ApplicationDbContext.cs` |
 | Entity Configs | `src/MyApp.Server.Infrastructure/Data/Configurations/` |
 | AG-UI Server | `src/MyApp.Server.WebApi/Program.cs` |
 | Auth Endpoints | `src/MyApp.Server.WebApi/Endpoints/AuthEndpoints.cs` |
 | API Endpoints | `src/MyApp.Server.WebApi/Endpoints/` |
 | Validators | `src/MyApp.Server.Application/Validators/` |
-| Worker Host | `src/MyApp.Server.Worker/Program.cs` |
 | Aspire Host | `src/MyApp.AppHost/Program.cs` |
 | React Frontend | `src/ui/` |
 | Capacitor Config | `src/ui/capacitor.config.ts` |
@@ -3024,7 +4055,6 @@ npx cap open ios
 |-------|----------|
 | Workflow checkpoint missing | Check Redis connection and key TTL settings |
 | Activity timeout | Increase activity timeout or optimize activity code |
-| Worker not processing | Check Redis connection and worker logs |
 | OAuth redirect fails | Verify redirect URIs in provider console match `https://localhost:xxxx/api/auth/callback` |
 | User not authenticated | Check cookie settings, ensure HTTPS, verify auth middleware order |
 | EF migrations fail | Ensure connection string is correct, database exists, and correct startup project |
@@ -3037,5 +4067,17 @@ npx cap open ios
 | Grafana shows no data | Check datasource configuration and verify Loki/Prometheus are running |
 
 ---
+
+## Appendix C: API Verification Status
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Redis checkpoint storage (Section 6.3) | Verified against StackExchange.Redis 7.x and System.Text.Json | Typed `ReadAsync<T>` + explicit checkpoint index; avoids wildcard keys and JsonElement casts. |
+| Session persistence + resume/report samples (Sections 7.3, 8.6–8.8) | Verified with the typed `IStorage` contract | Uses explicit checkpoint index keys only; no wildcard reads. |
+| AG-UI server wiring (Section 11.2) | Illustrative | Names may change between Microsoft.Agents.AI.Hosting.AGUI.AspNetCore previews; align with the templates shipped in your installed preview. |
+| Agent workflow APIs (Sections 6–9) | Illustrative | WorkflowBuilder/WorkflowExecutor surface is still in flux; treat as patterns, not drop-in code. |
+| CopilotKit integration (Sections 11.3–11.6) | Verified for CopilotKit 1.50.x | Matches published CopilotKit examples for headers/runtimeUrl/tooling. |
+| Observability + Prometheus queries (Section 10) | Verified for OpenTelemetry 1.14 + ASP.NET Core default metrics | Uses `http_server_request_duration_seconds_*` instruments and OTLP to Loki with a single limits block. |
+| Authentication cookie + rate limits (Section 12) | Verified for ASP.NET Core 10 | SameSite=Lax/None for OAuth, partition keys by user id/IP, not Host header. |
 
 *End of Document*

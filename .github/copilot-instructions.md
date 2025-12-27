@@ -6,15 +6,22 @@ This document provides context and architectural guidance for GitHub Copilot whe
 
 ## Solution Overview
 
-**MyApp** is a self-hosted AI-powered workflow orchestration application built with:
+**MyApp** is an **Agentic-First** self-hosted AI-powered workflow orchestration application built with:
 - .NET 10 and C# 13+
 - Microsoft Agent Framework Workflows with Redis checkpoint persistence
-- AG-UI Protocol for real-time AI streaming
+- AG-UI Protocol for real-time AI streaming (all UI interactions flow through AG-UI)
+- Voice support via Web Speech API + CopilotKit
 - .NET Aspire for orchestration and observability
 - ASP.NET Core Identity with social authentication
 - Entity Framework Core with PostgreSQL for data access
 - React + CopilotKit v1.50 web frontend
 - Capacitor for iOS/Android mobile apps
+
+**Agentic-First Architecture** means:
+- Every UI interaction flows through the AG-UI protocol (including form filling, data entry, navigation)
+- Every backend operation is an Agentic workflow with human-in-the-loop collaboration
+- Voice and text input are first-class citizens for user interaction
+- Shared state between frontend and agents enables real-time collaborative experiences
 
 ---
 
@@ -29,46 +36,46 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │                                                                             │
 │  Orchestrates:                                                              │
 │  - PostgreSQL (appdb database)                                              │
-│  - Redis (workflow checkpoints and caching)                                 │
-│  - WebApi (with authentication + AG-UI server)                              │
-│  - Worker (single instance - Phase 1)                                       │
+│  - Redis (workflow checkpoints, agent threads, caching)                     │
+│  - WebApi (with authentication + AG-UI server + inline workflows)           │
 │  - React Frontend (Vite development server)                                 │
 │  - Grafana (dashboards - port 3001)                                         │
 │  - Loki (log aggregation with OTLP - port 3100)                             │
 │  - Prometheus (metrics storage - port 9090)                                 │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
-              ┌───────────────┼───────────────┐
-              │               │               │
-              ▼               ▼               ▼
-    ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
-    │   WebApi     │  │   Worker     │  │ ServiceDefaults  │
-    │              │  │              │  │                  │
-    │ - REST API   │  │ - Workflows  │  │ - Telemetry      │
-    │ - AG-UI      │  │ - Activities │  │ - Health         │
-    │ - Auth       │  │ - Redis      │  │ - Config         │
-    └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘
-           │                 │                    │
-           │                 │                    │
-           └────────┬────────┘                    │
-                    │                             │
-                    ▼                             │
-         ┌─────────────────────┐                  │
-         │  Infrastructure     │◄─────────────────┘
+              ┌───────────────┴───────────────┐
+              │                               │
+              ▼                               ▼
+    ┌──────────────────────────┐     ┌──────────────────┐
+    │   WebApi                 │     │ ServiceDefaults  │
+    │                          │     │                  │
+    │ - REST API               │     │ - Telemetry      │
+    │ - AG-UI Server           │     │ - Health         │
+    │ - Auth                   │     │ - Config         │
+    │ - Inline Workflows       │     └────────┬─────────┘
+    │ - Agent Orchestration    │              │
+    └──────────┬───────────────┘              │
+               │                              │
+               ▼                              │
+         ┌─────────────────────┐              │
+         │  Infrastructure     │◄─────────────┘
          │                     │
          │ - Activities        │
          │ - DbContext         │
          │ - Configurations    │
          │ - Middleware        │
          │ - External Services │
+         │ - Agent Thread Store│
          └──────────┬──────────┘
                     │
                     ▼
          ┌─────────────────────┐
          │   Application       │
          │                     │
-         │ - Orchestrations    │
+         │ - Workflows         │
          │ - Validators        │
+         │ - Specialized Agents│
          │ - Use Cases         │
          └──────────┬──────────┘
                     │
@@ -87,6 +94,7 @@ This document provides context and architectural guidance for GitHub Copilot whe
     │  (Web Browser)           │       │  (iOS/Android)           │
     │                          │       │                          │
     │ - AG-UI Protocol         │       │ - AG-UI Protocol         │
+    │ - Voice Input            │       │ - Voice Input            │
     │ - Social Auth            │       │ - Social Auth            │
     │ - CopilotKit v1.50       │       │ - Native Features        │
     └────────┬─────────────────┘       └────────┬─────────────────┘
@@ -102,6 +110,7 @@ This document provides context and architectural guidance for GitHub Copilot whe
            │ - REST Endpoints    │
            │ - AG-UI Server      │
            │ - Authentication    │
+           │ - Inline Workflows  │
            └─────────────────────┘
 ```
 
@@ -114,13 +123,14 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │  ┌────────────────────┐           ┌────────────────────┐            │
 │  │  React + CopilotKit│           │  Capacitor Mobile  │            │
 │  │  (Browser)         │           │  (iOS/Android)     │            │
+│  │  + Voice Input     │           │  + Voice Input     │            │
 │  └─────────┬──────────┘           └─────────┬──────────┘            │
 │            │                                 │                       │
 │            └────────────┬────────────────────┘                       │
 │                         │                                            │
 └─────────────────────────┼────────────────────────────────────────────┘
                           │
-                          │ AG-UI (SSE) + REST API
+                          │ AG-UI (SSE) - ALL interactions
                           │
                           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -133,16 +143,19 @@ This document provides context and architectural guidance for GitHub Copilot whe
 │  └───────────────────────┬─────────────────────────────────────┘    │
 │                          │                                           │
 │  ┌───────────────────────▼───────────────────────┐                  │
-│  │  Endpoints                                    │                  │
+│  │  AG-UI Server + Endpoints                     │                  │
 │  │  - POST /api/agent (AG-UI streaming)          │                  │
-│  │  - POST /api/documents/ingest                 │                  │
-│  │  - GET  /api/workflows/{id}/status            │                  │
 │  │  - GET  /api/auth/login/{provider}            │                  │
 │  │  - POST /api/auth/logout                      │                  │
 │  │  - GET  /api/auth/user                        │                  │
 │  └───────────────────────┬───────────────────────┘                  │
 │                          │                                           │
-│                          │ WorkflowExecutor                          │
+│  ┌───────────────────────▼───────────────────────┐                  │
+│  │  Agent Orchestrator (Inline Execution)        │                  │
+│  │  - Coordinates specialized agents             │                  │
+│  │  - Manages human-in-the-loop                  │                  │
+│  │  - Streams via AG-UI                          │                  │
+│  └───────────────────────┬───────────────────────┘                  │
 │                          │                                           │
 └──────────────────────────┼───────────────────────────────────────────┘
                            │
@@ -150,40 +163,30 @@ This document provides context and architectural guidance for GitHub Copilot whe
            │               │               │
            ▼               ▼               ▼
 ┌────────────────┐  ┌──────────────────────────────────┐
-│  PostgreSQL    │  │   Microsoft Agent Framework      │
+│  PostgreSQL    │  │   Specialized Agents             │
 │                │  │                                  │
 │  Database:     │  │  ┌────────────────────────────┐  │
-│  - appdb       │◄─┼──│  Workflow Instance         │  │
-│                │  │  │  - IngestDocument          │  │
-│  Tables:       │  │  └────────┬───────────────────┘  │
-│  - Users       │  │           │                      │
-│  - Documents   │  │           │ Fan-out              │
-│  - AspNetUsers │  │           │                      │
-│  - etc.        │  │  ┌────────┴────────┬─────────┐  │
-└────────────────┘  │  │                 │         │  │
-                    │  ▼                 ▼         ▼  │
-┌────────────────┐  │ ┌──────┐      ┌──────┐  ┌──────┐│
-│  Redis         │  │ │ Act1 │      │ Act2 │  │ Act3 ││
-│                │  │ │Docling│     │Markit│  │Marker││
-│  Purpose:      │  │ └──────┘      └──────┘  └──────┘│
-│  - Checkpoints │◄─┤           Fan-in │              │
-│  - Cache       │  │                  ▼              │
-│  - Pub/Sub     │  │            ┌──────────┐        │
-│                │  │            │  Summary │        │
-│                │  │            └──────────┘        │
+│  - appdb       │◄─┼──│  Agent Orchestrator        │  │
+│                │  │  └────────┬───────────────────┘  │
+│  Tables:       │  │           │                      │
+│  - Users       │  │  ┌────────┴────────┬─────────┐  │
+│  - Inspections │  │  │                 │         │  │
+│  - AspNetUsers │  │  ▼                 ▼         ▼  │
+│  - etc.        │  │ ┌──────┐      ┌──────┐  ┌──────┐│
+└────────────────┘  │ │ Roof │      │ Bath │  │Kitchen│
+                    │ │Agent │      │Agent │  │ Agent ││
+┌────────────────┐  │ └──────┘      └──────┘  └──────┘│
+│  Redis         │  │                                  │
+│                │  │  Human-in-the-Loop               │
+│  Purpose:      │  │         │                        │
+│  - Checkpoints │◄─┤         ▼                        │
+│  - Agent Threads│  │  ┌──────────────┐              │
+│  - Cache       │  │  │  Inspector   │              │
+│                │  │  │  (via UI)    │              │
+│                │  │  └──────────────┘              │
 │                │  │                                │
 │                │  └────────────────────────────────┘
-└────────────────┘                  ▲
-                                    │
-                        ┌───────────┴───────────┐
-                        │                       │
-                        ▼                       ▼
-                 ┌──────────┐           ┌──────────┐
-                 │ Worker 1 │           │ Worker 2 │  ...
-                 │          │           │          │
-                 │ - Polls  │           │ - Polls  │
-                 │ - Executes│          │ - Executes│
-                 └──────────┘           └──────────┘
+└────────────────┘
 ```
 
 ### Authentication Flow with Social Providers
@@ -246,7 +249,6 @@ MyApp.slnx
 │   ├── MyApp.Server.Application           [Application Layer]
 │   ├── MyApp.Server.Infrastructure        [Infrastructure Layer]
 │   ├── MyApp.Server.WebApi                [Presentation - API]
-│   ├── MyApp.Server.Worker                [Presentation - Worker]
 │   └── MyApp.Shared                       [Shared - DTOs]
 ├── ui/                                    [React + CopilotKit Frontend]
 └── mobile/                                [Capacitor iOS/Android]
@@ -257,10 +259,9 @@ MyApp.slnx
 | Project | References |
 |---------|------------|
 | **Core** | None (pure domain) |
-| **Application** | Core, DTFx.Core |
-| **Infrastructure** | Core, Application, EF Core, DTFx.SqlServer |
-| **WebApi** | All above, ASP.NET Core, Identity, Auth providers |
-| **Worker** | All server projects, DTFx hosting |
+| **Application** | Core, Agent Framework abstractions |
+| **Infrastructure** | Core, Application, EF Core, Redis |
+| **WebApi** | All above, ASP.NET Core, Identity, Auth providers, AG-UI |
 | **ServiceDefaults** | OpenTelemetry, Aspire packages |
 | **AppHost** | Aspire.Hosting |
 | **Shared** | Blazor components, minimal dependencies |
@@ -339,13 +340,6 @@ MyApp.slnx
 |----------|--------|---------------|---------|
 | `/api/agent` | POST | **Yes** | AG-UI streaming endpoint (SSE) |
 
-### Document Management
-
-| Endpoint | Method | Auth Required | Purpose |
-|----------|--------|---------------|---------|
-| `/api/documents/ingest` | POST | Yes | Submit document for processing |
-| `/api/workflows/{id}/status` | GET | Yes | Check workflow status |
-
 ### Authentication
 
 | Endpoint | Method | Auth Required | Purpose |
@@ -418,7 +412,7 @@ MyApp.slnx
 1. **Core** layer has NO external dependencies
 2. **Application** depends only on Core + Agent Framework abstractions
 3. **Infrastructure** implements interfaces from Core/Application
-4. **Presentation** (WebApi, Worker) coordinates everything
+4. **Presentation** (WebApi) coordinates everything
 
 ### Agent Framework Middleware
 
@@ -512,7 +506,6 @@ npx cap open ios
 | OAuth redirect fails | Verify redirect URIs in provider console match `https://localhost:xxxx/api/auth/callback` |
 | User not authenticated | Check cookie settings, ensure HTTPS, verify auth middleware order |
 | EF migrations fail | Ensure connection string is correct, database exists, and correct startup project |
-| Worker not processing | Check Redis connection and worker logs |
 | Workflow checkpoint missing | Check Redis connection and key TTL settings |
 | AG-UI connection fails | Check CORS settings and authentication token |
 | CopilotKit not connecting | Verify `runtimeUrl` and authentication headers |
@@ -532,6 +525,7 @@ npx cap open ios
 | Agent Middleware | `MyApp.Server.Infrastructure/Middleware/` |
 | Workflow Instrumentation | `MyApp.Server.Infrastructure/Telemetry/WorkflowInstrumentation.cs` |
 | Redis Storage | `MyApp.Server.Infrastructure/Storage/RedisCheckpointStorage.cs` |
+| Agent Thread Store | `MyApp.Server.Infrastructure/Storage/RedisAgentThreadStorage.cs` |
 | DbContext | `MyApp.Server.Infrastructure/Data/ApplicationDbContext.cs` |
 | Entity Configs | `MyApp.Server.Infrastructure/Data/Configurations/` |
 | AG-UI Server | `MyApp.Server.WebApi/Program.cs` |
